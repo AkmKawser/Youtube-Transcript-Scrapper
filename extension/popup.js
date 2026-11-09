@@ -721,36 +721,10 @@ document.addEventListener("DOMContentLoaded", () => {
       throw new Error(`No transcript segments found for video (${currentVideoId}).`);
     } catch (directErr) {
       // Step 3: If YouTube does not provide transcripts (e.g. live video or fresh video),
-      // check if Python backend is running for Whisper Audio-to-Text conversion
-      if (isBackendOnline) {
-        setLoading(true, "No YouTube captions found. Converting video audio to text (Whisper ASR)... This may take 1-2 minutes.");
-        try {
-          const asrResp = await fetch(
-            `${backendUrl}/api/transcribe_audio?video_id=${currentVideoId}&target_lang=${selectedLang}`
-          );
-          const asrData = await asrResp.json();
-          if (asrData && asrData.success && asrData.snippets && asrData.snippets.length > 0) {
-            currentSnippets = asrData.snippets;
-            renderTranscript(currentSnippets);
-            return;
-          }
-          if (asrData && asrData.error) {
-            throw new Error(`Whisper ASR: ${asrData.error}`);
-          }
-        } catch (asrErr) {
-          showErrorState(asrErr.message);
-          return;
-        }
-      } else {
-        // Python server is offline - provide one-click button to start backend
-        showErrorState(
-          `No captions provided by YouTube for this video. To convert audio to text using Whisper AI, start the Python backend server:`,
-          true
-        );
-        return;
-      }
-
-      showErrorState(directErr.message);
+      // allow user to download audio.mp3 directly so they can feed it to their AI agent
+      showAudioDownloadState(
+        "YouTube has not generated a transcript for this video (Live Stream / New Upload). You can download the audio (.mp3) below to feed directly to your AI agent for transcription/translation:"
+      );
     }
   }
 
@@ -796,6 +770,50 @@ document.addEventListener("DOMContentLoaded", () => {
           : err.message,
         err.message.includes("Failed to fetch")
       );
+    }
+  }
+
+  function showAudioDownloadState(message) {
+    emptyState.style.display = "flex";
+    transcriptList.style.display = "none";
+    const audioUrl = `${backendUrl}/api/audio?video_id=${currentVideoId}`;
+
+    emptyState.innerHTML = `
+      <div style="color:#3ea6ff; font-weight:600; font-size:14px; margin-bottom:8px;">🎵 Audio Ready for AI Agent</div>
+      <p style="font-size:12px; line-height:1.5; color:#ddd; margin-bottom:14px;">${escapeHtml(message)}</p>
+      <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
+        <button id="btn-download-mp3-card" class="btn-primary" style="padding:10px 18px; font-weight:600; font-size:13px; border-radius:6px; cursor:pointer;">
+          ⬇ Download Audio (.mp3)
+        </button>
+        <span style="font-size:11px; color:#888;">Feed this MP3 to ChatGPT, Claude, Gemini, or Whisper AI</span>
+      </div>
+    `;
+
+    const downloadCardBtn = document.getElementById("btn-download-mp3-card");
+    if (downloadCardBtn) {
+      downloadCardBtn.addEventListener("click", () => {
+        if (!isBackendOnline) {
+          showErrorState(
+            "Python backend server is required to download the audio stream. Click below to start the server:",
+            true
+          );
+          return;
+        }
+        setLoading(true, "Downloading and converting YouTube audio to MP3...");
+        chrome.downloads.download({
+          url: audioUrl,
+          filename: `${sanitizeFilename(currentVideoTitle || currentVideoId)}.mp3`,
+          saveAs: true
+        }, downloadId => {
+          setLoading(false);
+          showAudioDownloadState(
+            "Audio download started! Feed this MP3 into your preferred agent or translation tool."
+          );
+          if (chrome.runtime.lastError || !downloadId) {
+            window.open(audioUrl, "_blank");
+          }
+        });
+      });
     }
   }
 

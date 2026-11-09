@@ -30,7 +30,7 @@ from youtube_transcript_api.formatters import (
     JSONFormatter
 )
 import updater
-import audio_transcriber
+import audio_extractor
 from app import SimpleSnippet
 
 
@@ -97,15 +97,13 @@ def fetch_transcript_for_video(video_id: str, languages=("en",), translate_to=No
 
         return fetched, snippets
     except (TranscriptsDisabled, NoTranscriptFound, IpBlocked, RequestBlocked, Exception):
-        target_lang = translate_to or (languages[0] if languages else "en")
-        target_code = "bn" if (target_lang and target_lang.startswith("bn")) else "en"
-        print(f"Direct transcript unavailable. Extracting audio and converting to text via Whisper ASR (target: {target_code})...")
-        asr_res = audio_transcriber.transcribe_youtube_audio(video_id, target_lang=target_code)
-        asr_snippets = asr_res.get("snippets", [])
-        if asr_snippets:
-            fetched_objs = [SimpleSnippet(s["text"], s["start"], s["duration"]) for s in asr_snippets]
-            return fetched_objs, asr_snippets
-        raise
+        print(f"Direct transcript unavailable for {video_id}. Extracting audio.mp3 for your AI agent...")
+        mp3_path = audio_extractor.extract_and_get_mp3(video_id)
+        if mp3_path:
+            print(f"✅ Audio downloaded: {mp3_path}")
+            print(f"You can now feed this MP3 to your preferred AI agent for translation or transcription.")
+            return [], []
+        raise RuntimeError(f"Could not extract transcript or audio for video {video_id}.")
 
 
 def main():
@@ -136,6 +134,8 @@ Examples:
     parser.add_argument("--batch", "-b", help="File containing YouTube URLs/IDs (one per line)")
     parser.add_argument("--format", "-f", choices=["txt", "srt", "vtt", "json", "md"], default="txt",
                         help="Export format (default: txt)")
+    parser.add_argument("--audio", action="store_true",
+                        help="Directly extract and download video audio as MP3 for use with AI agents")
     parser.add_argument("--languages", "-l", default="en,bn",
                         help="Comma-separated preferred languages (default: en,bn)")
     parser.add_argument("--translate", "-t", choices=["en", "bn"], help="Translate transcript into target language ('en' or 'bn')")
@@ -234,6 +234,25 @@ Examples:
             return
         except Exception as e:
             print(f"Error listing languages: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # Direct audio extraction
+    if args.audio:
+        print(f"Extracting audio (.mp3) for video: {video_id}...")
+        mp3_path = audio_extractor.extract_and_get_mp3(video_id)
+        if mp3_path:
+            if args.output:
+                import shutil
+                out_p = Path(args.output)
+                out_p.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(mp3_path, out_p)
+                print(f"✅ Audio saved to: {out_p.resolve()}")
+            else:
+                print(f"✅ Audio cached at: {mp3_path}")
+            print("You can now feed this MP3 to your preferred AI agent for translation or transcription.")
+            return
+        else:
+            print("Error: Failed to extract audio.", file=sys.stderr)
             sys.exit(1)
 
     languages = [l.strip() for l in args.languages.split(",") if l.strip()]

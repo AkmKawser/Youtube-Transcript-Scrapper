@@ -93,8 +93,8 @@ class TestUpdaterModule(unittest.TestCase):
         self.assertTrue(len(ver) > 0)
 
 
-class TestAudioTranscriber(unittest.TestCase):
-    """Test audio translation and language rules."""
+class TestAudioExtractor(unittest.TestCase):
+    """Test audio extractor caching and SimpleSnippet helper."""
 
     def test_simple_snippet(self):
         snip = SimpleSnippet("Hello snippet", 10.0, 2.5)
@@ -102,14 +102,11 @@ class TestAudioTranscriber(unittest.TestCase):
         self.assertEqual(snip["start"], 10.0)
         self.assertEqual(snip.get("duration"), 2.5)
 
-    def test_translate_text_helper(self):
-        from backend.audio_transcriber import translate_text
-        res_en = translate_text("नमस्ते", "en")
-        self.assertTrue(len(res_en) > 0)
-        self.assertTrue(any(w in res_en.lower() for w in ["hi", "hello", "namaste"]))
-
-        res_bn = translate_text("Hello world", "bn")
-        self.assertTrue(any(ord(c) >= 0x0980 and ord(c) <= 0x09FF for c in res_bn))
+    def test_get_cached_mp3_path(self):
+        from backend.audio_extractor import get_cached_mp3_path
+        path = get_cached_mp3_path("dQw4w9WgXcQ")
+        self.assertTrue(path.endswith(".mp3"))
+        self.assertIn("dQw4w9WgXcQ", path)
 
 
 if __name__ == "__main__":

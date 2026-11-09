@@ -76,5 +76,20 @@ This directory archives key conversations, user architectural requests, and chan
   * Added `/api/audio?video_id={id}` and `/api/download_audio` endpoints in `backend/app.py` to stream the generated MP3 as an attachment.
   * Added a dedicated **"🎵 Audio (.mp3)"** option in the extension's **⬇ Export** dropdown menu with Chrome `downloads` permission, allowing one-click download of the extracted audio.
 
+### 11. Architecture Pivot: Direct Captions Copy + MP3 Download for External AI Agents
+* **User Directive:**
+  > "i want to change the architecture., just let the user download the audio. you dont have to translate. user will place the audio to an agent and make it translate by themselves. change all the codes and files including the readme.md and the architecture."
+* **Implementation:**
+  * **Removed Heavy Local ASR (`faster-whisper`):** Removed `faster-whisper` and local translation dependencies, eliminating slow CPU inference, PyAV metadata errors, and heavy PyTorch/ctranslate2 memory consumption.
+  * **Lightweight Audio Extraction (`backend/audio_extractor.py`):** Utilizes `yt-dlp` to download the audio stream directly and `PyAV` (`av`) to encode standard `audio.mp3` in 1–2 seconds.
+  * **Extension UI Overhaul:**
+    * When YouTube provides native/auto captions: transcripts are copied directly with 0ms latency.
+    * When YouTube has NO captions (e.g. fresh uploads or completed live streams): the extension presents a dedicated download card with **`⬇ Download Audio (.mp3)`**, informing the user that they can upload this audio directly to ChatGPT, Claude, Gemini, or Whisper AI.
+  * **Updated CLI & API:**
+    * CLI supports `--audio` to extract and save audio directly to a target MP3 file.
+    * Backend API provides `/api/audio?video_id={id}` for instant streaming and download.
+  * **Documentation & Diagram:**
+    * Updated `README.md` with the new two-path architecture (Direct Captions $\rightarrow$ Multi-format Export vs. Audio Extraction $\rightarrow$ MP3 Download $\rightarrow$ External AI Agent).
+
 
 

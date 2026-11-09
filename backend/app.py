@@ -33,7 +33,7 @@ from youtube_transcript_api.formatters import (
 )
 
 import updater
-import audio_transcriber
+import audio_extractor
 
 class SimpleSnippet:
     """Lightweight snippet object compatible with TextFormatter and SRTFormatter."""
@@ -95,67 +95,31 @@ def health():
         "installed_version": updater.get_current_version(),
         "latest_pypi_version": update_info.get("latest_version"),
         "update_available": update_info.get("update_available", False),
-        "asr_engine": "faster-whisper",
-        "asr_status": "ready"
+        "audio_extractor": "yt-dlp + PyAV",
+        "audio_export": "ready"
     })
-
-
-@app.route("/api/transcribe_audio", methods=["GET", "POST"])
-def transcribe_audio_endpoint():
-    """
-    Direct endpoint for audio extraction & Whisper speech-to-text.
-    Useful for live videos, fresh uploads, or videos without captions.
-    """
-    data = request.get_json(silent=True) or {}
-    video_id_param = request.args.get("video_id") or request.args.get("url") or data.get("video_id") or data.get("url")
-    video_id = extract_video_id(video_id_param)
-    if not video_id:
-        return jsonify({"error": "Missing 'video_id' or 'url' parameter"}), 400
-
-    target_lang = request.args.get("target_lang") or data.get("target_lang") or "en"
-    target_code = "bn" if target_lang.startswith("bn") else "en"
-
-    try:
-        res = audio_transcriber.transcribe_youtube_audio(video_id, target_lang=target_code)
-        return jsonify(res)
-    except Exception as e:
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
 @app.route("/api/audio", methods=["GET"])
 @app.route("/api/download_audio", methods=["GET"])
 def download_audio_endpoint():
     """
-    Serves the extracted audio.mp3 for a video so the user can download and use it.
+    Serves the extracted audio.mp3 for a video so the user can download and use it with any AI agent.
     """
     video_id_param = request.args.get("video_id") or request.args.get("url")
     video_id = extract_video_id(video_id_param)
     if not video_id:
         return jsonify({"error": "Missing 'video_id' parameter"}), 400
 
-    mp3_path = audio_transcriber.get_cached_mp3_path(video_id)
-    if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) == 0:
-        # Generate MP3 on demand if not already converted
-        raw_audio = audio_transcriber.download_audio_from_youtube(video_id)
-        if not raw_audio:
-            return jsonify({"error": "Could not extract audio for this video"}), 404
-        try:
-            audio_transcriber.convert_to_mp3(raw_audio, mp3_path)
-        finally:
-            try:
-                if os.path.exists(raw_audio):
-                    os.remove(raw_audio)
-            except Exception:
-                pass
-
-    if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+    mp3_path = audio_extractor.extract_and_get_mp3(video_id)
+    if mp3_path and os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
         return send_file(
             mp3_path,
             mimetype="audio/mpeg",
             as_attachment=True,
             download_name=f"youtube_{video_id}.mp3"
         )
-    return jsonify({"error": "Failed to create MP3 file"}), 500
+    return jsonify({"error": "Failed to extract audio for this video"}), 500
 
 
 @app.route("/api/languages", methods=["GET", "POST"])
@@ -306,46 +270,17 @@ def get_transcript():
             })
 
     except (TranscriptsDisabled, NoTranscriptFound, IpBlocked, RequestBlocked, Exception) as fallback_err:
-        target_lang = translate_target or (languages[0] if languages else "en")
-        target_code = "bn" if target_lang.startswith("bn") else "en"
-
-        # Modern ASR Engine: Audio Extraction & Speech-to-Text via faster-whisper
-        # Used when YouTube does not provide transcripts (e.g. newly uploaded videos, live stream completions)
-        print(f"[app.py] Falling back to Audio-to-Text (faster-whisper) for video {video_id}...")
-        try:
-            asr_res = audio_transcriber.transcribe_youtube_audio(video_id, target_lang=target_code)
-            asr_snippets = asr_res.get("snippets", [])
-            if asr_snippets:
-                fetched_objs = [SimpleSnippet(s["text"], s["start"], s["duration"]) for s in asr_snippets]
-                if out_format == "txt":
-                    return TextFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
-                elif out_format == "srt":
-                    return SRTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
-                elif out_format == "vtt":
-                    return WebVTTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/vtt; charset=utf-8"}
-                elif out_format == "markdown":
-                    return format_markdown(asr_snippets), 200, {"Content-Type": "text/markdown; charset=utf-8"}
-                else:
-                    return jsonify({
-                        "success": True,
-                        "video_id": video_id,
-                        "source": "audio_speech_to_text",
-                        "detected_language": asr_res.get("detected_language"),
-                        "target_language": asr_res.get("target_language"),
-                        "count": len(asr_snippets),
-                        "snippets": asr_snippets,
-                        "plain_text": TextFormatter().format_transcript(fetched_objs),
-                        "markdown": format_markdown(asr_snippets)
-                    })
-        except Exception as asr_err:
-            print(f"[app.py] Audio transcription failed: {asr_err}")
-
         if isinstance(fallback_err, (IpBlocked, RequestBlocked)):
             return jsonify({
                 "error": "YouTube blocked /api/timedtext from this IP. Open the video in Chrome and use '⚡ In-Browser Direct' mode.",
                 "code": "IP_BLOCKED"
             }), 429
-        return jsonify({"error": f"Transcripts unavailable: {str(fallback_err)}", "code": "TRANSCRIPTS_UNAVAILABLE"}), 404
+        return jsonify({
+            "error": "No captions available on YouTube for this video. You can download the video's audio (.mp3) to feed to your AI agent.",
+            "code": "NO_CAPTIONS",
+            "has_audio_download": True,
+            "audio_download_url": f"/api/audio?video_id={video_id}"
+        }), 404
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
