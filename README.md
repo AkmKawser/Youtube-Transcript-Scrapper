@@ -1,5 +1,10 @@
 # 🎬 YouTube Transcript Scraper & Downloader
 
+[![GitHub Release](https://img.shields.io/github/v/release/AkmKawser/Youtube-Transcript-Scrapper?color=ff0033&logo=github)](https://github.com/AkmKawser/Youtube-Transcript-Scrapper/releases)
+[![Chrome Extension](https://img.shields.io/badge/Chrome%20Extension-Manifest%20V3-blue?logo=googlechrome)](https://github.com/AkmKawser/Youtube-Transcript-Scrapper/releases/latest)
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-brightgreen?logo=python)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A modern Chrome Extension (Manifest V3) and Python API for extracting, searching, and exporting YouTube transcripts in **TXT**, **SRT**, **WebVTT**, **JSON**, and **Markdown**.
 
 Powered by the popular [**`jdepoix/youtube-transcript-api`**](https://github.com/jdepoix/youtube-transcript-api) engine with **seamless upstream synchronization** so updates to the core repository are immediately reflected in your extension.

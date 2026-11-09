@@ -1,0 +1,87 @@
+name: Check Upstream youtube-transcript-api Updates
+
+on:
+  schedule:
+    # Run every Monday at 00:00 UTC
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests
+
+    - name: Check for new release
+      id: check
+      run: |
+        python -c "
+        import requests, json
+
+        with open('requirements.txt', 'r') as f:
+            lines = f.readlines()
+        
+        current_req = ''
+        for line in lines:
+            if 'youtube-transcript-api' in line:
+                current_req = line.strip()
+
+        resp = requests.get('https://pypi.org/pypi/youtube-transcript-api/json')
+        latest = resp.json()['info']['version']
+        print(f'Latest PyPI Version: {latest}')
+        print(f'Current Requirement: {current_req}')
+
+        with open('latest_version.txt', 'w') as out:
+            out.write(latest)
+        "
+        echo "LATEST_VERSION=$(cat latest_version.txt)" >> $GITHUB_ENV
+
+    - name: Create Issue if new version is released
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const latestVersion = process.env.LATEST_VERSION;
+          const fs = require('fs');
+          const reqs = fs.readFileSync('requirements.txt', 'utf8');
+          
+          if (!reqs.includes(latestVersion)) {
+            const title = `🚀 Upstream Update Available: youtube-transcript-api v${latestVersion}`;
+            const body = `A new version of [jdepoix/youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api) (**v${latestVersion}**) has been published to PyPI.\n\n### Action Required:\n- Review release notes on GitHub\n- Test with Chrome Extension & Backend API\n- Bump version in \`requirements.txt\` and release new package.`;
+            
+            // Check if issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open'
+            });
+            
+            const existing = issues.data.find(i => i.title.includes(latestVersion));
+            if (!existing) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['dependencies', 'upstream-sync']
+              });
+              console.log('Created notification issue for v' + latestVersion);
+            } else {
+              console.log('Issue already exists for v' + latestVersion);
+            }
+          } else {
+            console.log('Already up to date with version ' + latestVersion);
+          }

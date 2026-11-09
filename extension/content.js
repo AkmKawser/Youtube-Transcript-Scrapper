@@ -464,7 +464,15 @@ const observer = new MutationObserver(() => {
     injectInlineButton();
   }
 });
-observer.observe(document.body, { childList: true, subtree: true });
+if (document.body) {
+  observer.observe(document.body, { childList: true, subtree: true });
+} else {
+  window.addEventListener("DOMContentLoaded", () => {
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  });
+}
 
 // Listen for messages from Extension Popup or Background
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
