@@ -63,12 +63,11 @@ if (!window.__ytsContentScriptV3Loaded) {
   }
 
   async function extractViaDomPanel(targetLang = "en") {
-    let panel = document.querySelector(
-      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
-    );
+    const hasAnySegments = () =>
+      document.querySelectorAll("ytd-transcript-segment-renderer, transcript-segment-view-model").length > 0;
 
     // If segments are not rendered yet, click all matching "Show transcript" buttons in description
-    if (!panel || panel.querySelectorAll("ytd-transcript-segment-renderer").length === 0) {
+    if (!hasAnySegments()) {
       let btns = Array.from(
         document.querySelectorAll(
           'ytd-video-description-transcript-section-renderer button, button[aria-label*="Show transcript" i]'
@@ -101,15 +100,15 @@ if (!window.__ytsContentScriptV3Loaded) {
         });
         for (let i = 0; i < 25; i++) {
           await new Promise(r => setTimeout(r, 200));
-          if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
+          if (hasAnySegments()) {
             break;
           }
         }
       }
     }
 
-    panel = document.querySelector(
-      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
+    const panel = document.querySelector(
+      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"], ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]'
     );
 
     let matchedNativeLang = false;
@@ -133,7 +132,7 @@ if (!window.__ytsContentScriptV3Loaded) {
             targetItem.click();
             await new Promise(r => setTimeout(r, 800));
             for (let i = 0; i < 20; i++) {
-              if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
+              if (hasAnySegments()) {
                 break;
               }
               await new Promise(r => setTimeout(r, 200));
@@ -143,30 +142,53 @@ if (!window.__ytsContentScriptV3Loaded) {
       }
     }
 
-    const segEls = document.querySelectorAll("ytd-transcript-segment-renderer");
-    if (segEls.length === 0) {
+    const modernSegs = document.querySelectorAll("transcript-segment-view-model");
+    const legacySegs = document.querySelectorAll("ytd-transcript-segment-renderer");
+    if (modernSegs.length === 0 && legacySegs.length === 0) {
       return null;
     }
 
     const snippets = [];
-    segEls.forEach(seg => {
-      const tsText = seg.querySelector(".segment-timestamp")?.textContent?.trim() || "0:00";
-      const text = seg.querySelector(".segment-text")?.textContent?.trim() || "";
-      if (text) {
-        snippets.push({
-          text: text,
-          start: parseTimestampToSeconds(tsText),
-          duration: 3.0
-        });
-      }
-    });
+    if (modernSegs.length > 0) {
+      modernSegs.forEach(seg => {
+        const tsText =
+          seg.querySelector(".ytwTranscriptSegmentViewModelTimestamp")?.textContent?.trim() || "0:00";
+        const text =
+          seg.querySelector('span[role="text"], .ytAttributedStringHost')?.textContent?.trim() || "";
+        if (text) {
+          snippets.push({
+            text: text,
+            start: parseTimestampToSeconds(tsText),
+            duration: 3.0
+          });
+        }
+      });
+    } else {
+      legacySegs.forEach(seg => {
+        const tsText = seg.querySelector(".segment-timestamp")?.textContent?.trim() || "0:00";
+        const text = seg.querySelector(".segment-text")?.textContent?.trim() || "";
+        if (text) {
+          snippets.push({
+            text: text,
+            start: parseTimestampToSeconds(tsText),
+            duration: 3.0
+          });
+        }
+      });
+    }
 
     for (let i = 0; i < snippets.length - 1; i++) {
       snippets[i].duration = Math.max(1.0, +(snippets[i + 1].start - snippets[i].start).toFixed(2));
     }
 
     if (snippets.length === 0) return null;
-    if (!matchedNativeLang) {
+    const sampleText = snippets.slice(0, 15).map(s => s.text).join(" ");
+    const isBanglaText = /[\u0980-\u09FF]/.test(sampleText);
+    const needsTranslation =
+      !matchedNativeLang &&
+      ((targetLang.startsWith("bn") && !isBanglaText) || (targetLang.startsWith("en") && isBanglaText));
+
+    if (needsTranslation) {
       return await translateSnippetsInPage(snippets, targetLang);
     }
     return snippets;

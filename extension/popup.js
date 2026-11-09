@@ -688,11 +688,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // 1. In-Browser Direct Mode
-  async function fetchViaBrowserMode() {
+  async function fetchViaBrowserMode(isFallback = false) {
     const selectedLang = langSelect.value || "en";
     const tabVideoId = activeTab && activeTab.url ? extractVideoId(activeTab.url) : "";
 
     // Step 1: If user is on the matching YouTube tab, run Engine 1 (DOM Transcript Panel) directly via executeScript
+    // Supports BOTH legacy ytd-transcript-segment-renderer AND 2026 PAmodern_transcript_view (transcript-segment-view-model)
     if (chrome.scripting && activeTab && activeTab.id && tabVideoId === currentVideoId) {
       try {
         const execDom = await chrome.scripting.executeScript({
@@ -707,8 +708,11 @@ document.addEventListener("DOMContentLoaded", () => {
               return parts[0] || 0;
             }
 
+            const hasAnySegments = () =>
+              document.querySelectorAll("ytd-transcript-segment-renderer, transcript-segment-view-model").length > 0;
+
             // If segments are not rendered yet, check if transcript section exists in description
-            if (document.querySelectorAll("ytd-transcript-segment-renderer").length === 0) {
+            if (!hasAnySegments()) {
               let btns = Array.from(
                 document.querySelectorAll(
                   'ytd-video-description-transcript-section-renderer button, button[aria-label*="Show transcript" i]'
@@ -742,7 +746,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
                 for (let i = 0; i < 25; i++) {
                   await new Promise(r => setTimeout(r, 200));
-                  if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
+                  if (hasAnySegments()) {
                     break;
                   }
                 }
@@ -750,7 +754,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             const panel = document.querySelector(
-              'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
+              'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"], ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]'
             );
 
             let matchedNativeLang = false;
@@ -776,7 +780,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     targetItem.click();
                     await new Promise(r => setTimeout(r, 800));
                     for (let i = 0; i < 20; i++) {
-                      if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
+                      if (hasAnySegments()) {
                         break;
                       }
                       await new Promise(r => setTimeout(r, 200));
@@ -786,29 +790,53 @@ document.addEventListener("DOMContentLoaded", () => {
               }
             }
 
-            const segEls = document.querySelectorAll("ytd-transcript-segment-renderer");
-            if (segEls.length === 0) {
+            const modernSegs = document.querySelectorAll("transcript-segment-view-model");
+            const legacySegs = document.querySelectorAll("ytd-transcript-segment-renderer");
+            if (modernSegs.length === 0 && legacySegs.length === 0) {
               return { success: false };
             }
 
             const snippets = [];
-            segEls.forEach(seg => {
-              const tsText = seg.querySelector(".segment-timestamp")?.textContent?.trim() || "0:00";
-              const text = seg.querySelector(".segment-text")?.textContent?.trim() || "";
-              if (text) {
-                snippets.push({
-                  text: text,
-                  start: parseTs(tsText),
-                  duration: 3.0
-                });
-              }
-            });
+            if (modernSegs.length > 0) {
+              modernSegs.forEach(seg => {
+                const tsText =
+                  seg.querySelector(".ytwTranscriptSegmentViewModelTimestamp")?.textContent?.trim() || "0:00";
+                const text =
+                  seg.querySelector('span[role="text"], .ytAttributedStringHost')?.textContent?.trim() || "";
+                if (text) {
+                  snippets.push({
+                    text: text,
+                    start: parseTs(tsText),
+                    duration: 3.0
+                  });
+                }
+              });
+            } else {
+              legacySegs.forEach(seg => {
+                const tsText = seg.querySelector(".segment-timestamp")?.textContent?.trim() || "0:00";
+                const text = seg.querySelector(".segment-text")?.textContent?.trim() || "";
+                if (text) {
+                  snippets.push({
+                    text: text,
+                    start: parseTs(tsText),
+                    duration: 3.0
+                  });
+                }
+              });
+            }
 
             for (let i = 0; i < snippets.length - 1; i++) {
               snippets[i].duration = Math.max(1.0, +(snippets[i + 1].start - snippets[i].start).toFixed(2));
             }
 
-            return { success: snippets.length > 0, snippets, matchedNativeLang };
+            // Detect whether extracted text is already in the requested language (English vs Bangla)
+            const sampleText = snippets.slice(0, 15).map(s => s.text).join(" ");
+            const isBanglaText = /[\u0980-\u09FF]/.test(sampleText);
+            const needsTranslation =
+              !matchedNativeLang &&
+              ((targetLang.startsWith("bn") && !isBanglaText) || (targetLang.startsWith("en") && isBanglaText));
+
+            return { success: snippets.length > 0, snippets, needsTranslation };
           },
           args: [selectedLang]
         });
@@ -816,7 +844,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const domResp = execDom && execDom[0] ? execDom[0].result : null;
         if (domResp && domResp.success && domResp.snippets && domResp.snippets.length > 0) {
           let finalSnippets = domResp.snippets;
-          if (!domResp.matchedNativeLang) {
+          if (domResp.needsTranslation) {
             finalSnippets = await translateSnippetsInPopup(finalSnippets, selectedLang);
           }
           currentSnippets = finalSnippets;
@@ -838,8 +866,15 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       throw new Error(`No transcript segments found for video (${currentVideoId}).`);
     } catch (directErr) {
-      if (isBackendOnline && !directErr.message.toLowerCase().includes("unavailable")) {
-        await fetchViaPythonMode();
+      const errLower = (directErr.message || "").toLowerCase();
+      if (
+        !isFallback &&
+        isBackendOnline &&
+        !errLower.includes("unavailable") &&
+        !errLower.includes("429") &&
+        !errLower.includes("rate-limited")
+      ) {
+        await fetchViaPythonMode(true);
         return;
       }
       showErrorState(directErr.message);
@@ -847,7 +882,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // 2. Python API Mode (via youtube-transcript-api)
-  async function fetchViaPythonMode() {
+  async function fetchViaPythonMode(isFallback = false) {
     const selectedLang = langSelect.value || "en";
     const translateTo = translateSelect.value || "";
 
@@ -868,11 +903,20 @@ document.addEventListener("DOMContentLoaded", () => {
         );
       }
       if (!resp.ok || !data.success) {
+        // If Python API hits YouTube HTTP 429 IP block, automatically fall back to In-Browser Direct DOM/DVR extractor
+        if (!isFallback && (resp.status === 429 || data.code === "IP_BLOCKED")) {
+          await fetchViaBrowserMode(true);
+          return;
+        }
         throw new Error(data.error || "Failed to fetch transcript from Python API");
       }
       currentSnippets = data.snippets || [];
       renderTranscript(currentSnippets);
     } catch (err) {
+      if (!isFallback && err.message.includes("Failed to fetch")) {
+        await fetchViaBrowserMode(true);
+        return;
+      }
       showErrorState(
         err.message.includes("Failed to fetch")
           ? "Python API Server is offline. Switch to '⚡ In-Browser Direct' mode or start backend/run_server.bat."
