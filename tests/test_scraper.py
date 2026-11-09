@@ -104,6 +104,19 @@ class TestLiveDvrModule(unittest.TestCase):
         self.assertEqual(snip.get("duration"), 3.0)
 
 
+class TestAudioTranscriber(unittest.TestCase):
+    """Test audio translation and language rules."""
+
+    def test_translate_text_helper(self):
+        from backend.audio_transcriber import translate_text
+        res_en = translate_text("नमस्ते", "en")
+        self.assertTrue(len(res_en) > 0)
+        self.assertTrue(any(w in res_en.lower() for w in ["hi", "hello", "namaste"]))
+
+        res_bn = translate_text("Hello world", "bn")
+        self.assertTrue(any(ord(c) >= 0x0980 and ord(c) <= 0x09FF for c in res_bn))
+
+
 if __name__ == "__main__":
     unittest.main()
 

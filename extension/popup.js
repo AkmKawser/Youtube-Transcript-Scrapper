@@ -866,6 +866,25 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       throw new Error(`No transcript segments found for video (${currentVideoId}).`);
     } catch (directErr) {
+      // Step 3: If YouTube does not provide transcripts (e.g. live video or fresh video),
+      // and Python backend is online, invoke Whisper Audio-to-Text conversion
+      if (isBackendOnline) {
+        setLoading(true, "Converting video audio to text (Whisper ASR)...");
+        try {
+          const asrResp = await fetch(
+            `${backendUrl}/api/transcribe_audio?video_id=${currentVideoId}&target_lang=${selectedLang}`
+          );
+          const asrData = await asrResp.json();
+          if (asrData && asrData.success && asrData.snippets && asrData.snippets.length > 0) {
+            currentSnippets = asrData.snippets;
+            renderTranscript(currentSnippets);
+            return;
+          }
+        } catch (asrErr) {
+          console.warn("Audio-to-text fallback error:", asrErr);
+        }
+      }
+
       const errLower = (directErr.message || "").toLowerCase();
       if (
         !isFallback &&

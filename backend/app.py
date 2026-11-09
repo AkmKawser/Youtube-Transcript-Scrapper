@@ -34,6 +34,7 @@ from youtube_transcript_api.formatters import (
 
 import updater
 import live_dvr
+import audio_transcriber
 
 app = Flask(__name__)
 # Enable CORS for all routes so Chrome Extension can communicate seamlessly
@@ -81,8 +82,32 @@ def health():
         "package": "youtube-transcript-api",
         "installed_version": updater.get_current_version(),
         "latest_pypi_version": update_info.get("latest_version"),
-        "update_available": update_info.get("update_available", False)
+        "update_available": update_info.get("update_available", False),
+        "asr_engine": "faster-whisper",
+        "asr_status": "ready"
     })
+
+
+@app.route("/api/transcribe_audio", methods=["GET", "POST"])
+def transcribe_audio_endpoint():
+    """
+    Direct endpoint for audio extraction & Whisper speech-to-text.
+    Useful for live videos, fresh uploads, or videos without captions.
+    """
+    data = request.get_json(silent=True) or {}
+    video_id_param = request.args.get("video_id") or request.args.get("url") or data.get("video_id") or data.get("url")
+    video_id = extract_video_id(video_id_param)
+    if not video_id:
+        return jsonify({"error": "Missing 'video_id' or 'url' parameter"}), 400
+
+    target_lang = request.args.get("target_lang") or data.get("target_lang") or "en"
+    target_code = "bn" if target_lang.startswith("bn") else "en"
+
+    try:
+        res = audio_transcriber.transcribe_youtube_audio(video_id, target_lang=target_code)
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
 @app.route("/api/languages", methods=["GET", "POST"])
@@ -232,10 +257,17 @@ def get_transcript():
                 "markdown": format_markdown(raw_snippets)
             })
 
-    except (TranscriptsDisabled, NoTranscriptFound, IpBlocked, RequestBlocked) as fallback_err:
-        # Fallback for recently completed Live Streams (isPostLiveDvr) using DASH WebVTT segments
+    except (TranscriptsDisabled, NoTranscriptFound, IpBlocked, RequestBlocked, Exception) as fallback_err:
         target_lang = translate_target or (languages[0] if languages else "en")
-        dvr_snippets = live_dvr.extract_live_dvr_transcript(video_id, target_lang=target_lang)
+        target_code = "bn" if target_lang.startswith("bn") else "en"
+
+        # Tier 2 Fallback: Live DVR WebVTT segments (for live streams)
+        dvr_snippets = None
+        try:
+            dvr_snippets = live_dvr.extract_live_dvr_transcript(video_id, target_lang=target_code)
+        except Exception as dvr_err:
+            print(f"[app.py] Live DVR extraction failed: {dvr_err}")
+
         if dvr_snippets:
             fetched_objs = [live_dvr.SimpleSnippet(s["text"], s["start"], s["duration"]) for s in dvr_snippets]
             if out_format == "txt":
@@ -256,12 +288,44 @@ def get_transcript():
                     "plain_text": TextFormatter().format_transcript(fetched_objs),
                     "markdown": format_markdown(dvr_snippets)
                 })
+
+        # Tier 3 Fallback: Audio Extraction & Speech-to-Text via faster-whisper
+        # Used when YouTube does not provide transcripts (e.g. newly uploaded videos, completed streams)
+        print(f"[app.py] Falling back to Audio-to-Text (faster-whisper) for video {video_id}...")
+        try:
+            asr_res = audio_transcriber.transcribe_youtube_audio(video_id, target_lang=target_code)
+            asr_snippets = asr_res.get("snippets", [])
+            if asr_snippets:
+                fetched_objs = [live_dvr.SimpleSnippet(s["text"], s["start"], s["duration"]) for s in asr_snippets]
+                if out_format == "txt":
+                    return TextFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
+                elif out_format == "srt":
+                    return SRTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
+                elif out_format == "vtt":
+                    return WebVTTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/vtt; charset=utf-8"}
+                elif out_format == "markdown":
+                    return format_markdown(asr_snippets), 200, {"Content-Type": "text/markdown; charset=utf-8"}
+                else:
+                    return jsonify({
+                        "success": True,
+                        "video_id": video_id,
+                        "source": "audio_speech_to_text",
+                        "detected_language": asr_res.get("detected_language"),
+                        "target_language": asr_res.get("target_language"),
+                        "count": len(asr_snippets),
+                        "snippets": asr_snippets,
+                        "plain_text": TextFormatter().format_transcript(fetched_objs),
+                        "markdown": format_markdown(asr_snippets)
+                    })
+        except Exception as asr_err:
+            print(f"[app.py] Audio transcription failed: {asr_err}")
+
         if isinstance(fallback_err, (IpBlocked, RequestBlocked)):
             return jsonify({
                 "error": "YouTube blocked /api/timedtext from this IP. Open the video in Chrome and use '⚡ In-Browser Direct' mode.",
                 "code": "IP_BLOCKED"
             }), 429
-        return jsonify({"error": "Transcripts are disabled for this video", "code": "TRANSCRIPTS_DISABLED"}), 404
+        return jsonify({"error": f"Transcripts unavailable: {str(fallback_err)}", "code": "TRANSCRIPTS_UNAVAILABLE"}), 404
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
