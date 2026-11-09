@@ -17,12 +17,6 @@ Engineered with a **smart dual-path architecture**: instantly copies native YouT
 
 ---
 
-<p align="center">
-  <img src="docs/images/preview.png" width="420" alt="Extension UI Preview" style="border-radius:10px; box-shadow: 0 4px 14px rgba(0,0,0,0.4);" />
-</p>
-
----
-
 ## 🏗️ System Architecture
 
 ```mermaid
