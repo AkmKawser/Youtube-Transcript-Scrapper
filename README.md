@@ -1,9 +1,15 @@
 # 🎬 YouTube Transcript Scraper & Downloader
 
-[![GitHub Release](https://img.shields.io/github/v/release/AkmKawser/Youtube-Transcript-Scrapper?color=ff0033&logo=github)](https://github.com/AkmKawser/Youtube-Transcript-Scrapper/releases)
-[![Chrome Extension](https://img.shields.io/badge/Chrome%20Extension-Manifest%20V3-blue?logo=googlechrome)](https://github.com/AkmKawser/Youtube-Transcript-Scrapper/releases/latest)
-[![Python Version](https://img.shields.io/badge/python-3.10%2B-brightgreen?logo=python)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <img src="extension/icons/icon128.png" width="96" height="96" alt="YouTube Transcript Scraper Logo" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/AkmKawser/Youtube-Transcript-Scrapper/releases"><img src="https://img.shields.io/github/v/release/AkmKawser/Youtube-Transcript-Scrapper?color=ff0033&logo=github" alt="GitHub Release" /></a>
+  <a href="https://github.com/AkmKawser/Youtube-Transcript-Scrapper/releases/latest"><img src="https://img.shields.io/badge/Chrome%20Extension-Manifest%20V3-blue?logo=googlechrome" alt="Chrome Extension" /></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-brightgreen?logo=python" alt="Python Version" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
+</p>
 
 A high-performance Chrome Extension (Manifest V3) and Python backend for extracting, translating, searching, and exporting YouTube transcripts in **TXT**, **SRT**, **WebVTT**, **JSON**, and **Markdown**.
 
@@ -11,36 +17,42 @@ Engineered with a **smart dual-path architecture**: instantly copies native YouT
 
 ---
 
+<p align="center">
+  <img src="docs/images/preview.png" width="420" alt="Extension UI Preview" style="border-radius:10px; box-shadow: 0 4px 14px rgba(0,0,0,0.4);" />
+</p>
+
+---
+
 ## 🏗️ System Architecture
 
 ```mermaid
 flowchart TD
-    A["YouTube Video (URL or Tab)"] --> B{"Does YouTube provide auto/manual transcript?"}
+    Start(["YouTube Video (URL or Tab)"]) --> CheckCaptions{"Does YouTube provide auto/manual transcript?"}
     
-    %% Path 1: Direct Transcript Extraction
-    B -- Yes --> C["Instant Direct Transcript Extractor"]
-    C --> C1["Modern DOM Panel (PAmodern_transcript_view)"]
-    C --> C2["Legacy DOM Panel (ytd-transcript-segment-renderer)"]
-    C --> C3["Innertube ANDROID API / youtube-transcript-api"]
-    C1 --> E["Language Validation & Conversion"]
-    C2 --> E
-    C3 --> E
+    %% Path 1: Direct Caption Extraction
+    CheckCaptions -- Yes --> Direct["Instant Direct Transcript Extractor (0ms)"]
+    Direct --> DOMModern["Modern DOM Panel (PAmodern_transcript_view)"]
+    Direct --> DOMLegacy["Legacy DOM Panel (ytd-transcript-segment-renderer)"]
+    Direct --> InnertubeAPI["Innertube API / youtube-transcript-api"]
+    DOMModern --> LangRule["Strict Language Routing & Conversion"]
+    DOMLegacy --> LangRule
+    InnertubeAPI --> LangRule
 
     %% Path 2: Audio Extraction & Whisper ASR Fallback
-    B -- No / Live Streams / Recent Videos --> D["Audio-to-Text Pipeline (Whisper ASR)"]
-    D --> D1["Extract Audio Stream via yt-dlp"]
-    D1 --> D2["In-Memory Audio Decode (PyAV)"]
-    D2 --> D3["Local Speech-to-Text via faster-whisper"]
-    D3 --> E
+    CheckCaptions -- No / Live Stream / Fresh Upload --> ASR["Audio-to-Text Pipeline (Whisper ASR)"]
+    ASR --> AudioDL["1. Extract Audio Stream via yt-dlp"]
+    AudioDL --> AudioDec["2. In-Memory Audio Decode (PyAV)"]
+    AudioDec --> WhisperTranscribe["3. Speech Recognition (faster-whisper CPU int8)"]
+    WhisperTranscribe --> LangRule
 
     %% Strict Language Transformation
-    E --> F{"Select Target Output"}
-    F -->|English (en)| G["English Output: Preserves English, auto-translates Hindi/other sources into English"]
-    F -->|Bangla (bn)| H["Bangla Output: Preserves native Bangla, auto-translates English/Hindi into Bangla"]
+    LangRule --> TargetChoice{"Select Target Language"}
+    TargetChoice -->|English (en)| OutEN["English Output: Preserves English, auto-converts Hindi/other sources to English"]
+    TargetChoice -->|Bangla (bn)| OutBN["Bangla Output: Preserves native Bangla, auto-translates English/Hindi to Bangla"]
 
-    %% Export
-    G --> I["Export: Plain Text (.txt) | Subtitles (.srt, .vtt) | JSON | Markdown (.md)"]
-    H --> I
+    %% Export Formats
+    OutEN --> ExportFormats["Export Formats: Plain Text (.txt) | Subtitles (.srt, .vtt) | JSON | Markdown (.md)"]
+    OutBN --> ExportFormats
 ```
 
 ### 🎯 Key Architectural Pillars
