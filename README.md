@@ -185,6 +185,19 @@ The backend exposes clean REST endpoints:
 
 ---
 
+## 📦 Release v1.0.1 Highlights
+
+* **🎯 Dual-Path Architecture:**
+  * **Path 1 (Instant Direct Extraction):** Instantly copies YouTube native and auto-generated transcripts with 0ms latency via DOM & Innertube API.
+  * **Path 2 (Audio .mp3 Extraction for AI Agents):** For videos without captions (live streams, fresh uploads), extracts and encodes high-quality `audio.mp3` in 1–2 seconds with `yt-dlp` and `PyAV`. Download and feed directly to any AI agent (ChatGPT, Claude, Gemini, Whisper) for custom transcription or translation.
+* **🎵 Direct Audio Download:** One-click **`⬇ Download Audio (.mp3)`** in the extension popup and export menu for caption-less videos.
+* **↗️ Pop-Out Floating Window:** Standalone window mode (`popup.html?mode=window`) that never closes or resets when clicking elsewhere.
+* **💾 State Persistence:** Automatic transcript caching and recovery via `chrome.storage.local`.
+* **💻 CLI `--audio` Support:** Command line support for direct audio extraction (`python cli.py URL --audio -o audio.mp3`).
+* **🚀 One-Click Windows Protocol Launcher:** Seamlessly launch `backend/run_server.bat` directly from the extension via `yt-transcript://start`.
+
+---
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

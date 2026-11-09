@@ -91,5 +91,15 @@ This directory archives key conversations, user architectural requests, and chan
   * **Documentation & Diagram:**
     * Updated `README.md` with the new two-path architecture (Direct Captions $\rightarrow$ Multi-format Export vs. Audio Extraction $\rightarrow$ MP3 Download $\rightarrow$ External AI Agent).
 
+### 12. Release v1.0.1
+* **User Directive:** "make the release 1.0.1 also update the release readme"
+* **Implementation:**
+  * Bumped Manifest V3 extension version to `1.0.1` in `extension/manifest.json`.
+  * Added Release Highlights section to `README.md`.
+  * Re-packaged `dist/youtube-transcript-scraper-extension.zip` with validated Manifest V3 structure.
+  * Tagged Git commit with `v1.0.1` and pushed to remote `origin main`.
+  * Published official GitHub Release `v1.0.1` with release notes and downloadable extension asset.
+
+
 
 
