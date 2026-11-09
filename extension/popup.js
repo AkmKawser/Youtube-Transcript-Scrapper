@@ -71,19 +71,31 @@ document.addEventListener("DOMContentLoaded", () => {
       window.close();
     });
   }
-  chrome.storage.local.get(["backendUrl", "preferredMode"], res => {
-    if (res.backendUrl) {
-      backendUrl = res.backendUrl;
-      settingBackendUrl.value = backendUrl;
+  chrome.storage.local.get(
+    ["backendUrl", "preferredMode", "lastVideoId", "lastVideoTitle", "lastSnippets", "lastLang"],
+    res => {
+      if (res.backendUrl) {
+        backendUrl = res.backendUrl;
+        settingBackendUrl.value = backendUrl;
+      }
+      if (res.preferredMode) {
+        setMode(res.preferredMode);
+      } else {
+        setMode("browser");
+      }
+      if (res.lastSnippets && res.lastSnippets.length > 0) {
+        currentSnippets = res.lastSnippets;
+        currentVideoId = res.lastVideoId || "";
+        currentVideoTitle = res.lastVideoTitle || "";
+        if (currentVideoTitle) videoTitleEl.textContent = currentVideoTitle;
+        if (currentVideoId) videoIdBadge.textContent = `ID: ${currentVideoId}`;
+        if (res.lastLang && langSelect) langSelect.value = res.lastLang;
+        renderTranscript(currentSnippets);
+      }
+      checkBackendHealth();
+      initActiveTab();
     }
-    if (res.preferredMode) {
-      setMode(res.preferredMode);
-    } else {
-      setMode("browser");
-    }
-    checkBackendHealth();
-    initActiveTab();
-  });
+  );
 
   // Switch Modes
   tabBrowserMode.addEventListener("click", () => setMode("browser"));
@@ -150,14 +162,17 @@ document.addEventListener("DOMContentLoaded", () => {
         const url = activeTab.url || "";
         const videoId = extractVideoId(url);
         if (videoId) {
-          currentVideoId = videoId;
-          videoIdBadge.textContent = `ID: ${videoId}`;
-          videoTitleEl.textContent = activeTab.title
-            ? activeTab.title.replace(" - YouTube", "")
-            : "YouTube Video";
-          currentVideoTitle = videoTitleEl.textContent;
+          if (videoId !== currentVideoId) {
+            // Switched to a new video
+            currentVideoId = videoId;
+            currentVideoTitle = activeTab.title
+              ? activeTab.title.replace(" - YouTube", "")
+              : "YouTube Video";
+            videoIdBadge.textContent = `ID: ${videoId}`;
+            videoTitleEl.textContent = currentVideoTitle;
+          }
           ensureContentScriptAndQueryPage();
-        } else {
+        } else if (!currentVideoId) {
           videoTitleEl.textContent = "Not a YouTube video page";
           videoIdBadge.textContent = "Use 'Paste URL' below";
           showManualInput(true);
@@ -877,6 +892,12 @@ document.addEventListener("DOMContentLoaded", () => {
       transcriptList.appendChild(row);
     });
 
+    chrome.storage.local.set({
+      lastVideoId: currentVideoId,
+      lastVideoTitle: currentVideoTitle,
+      lastSnippets: currentSnippets,
+      lastLang: langSelect.value || "en"
+    });
     matchCountEl.textContent = highlight ? `${snippets.length} matches` : `${snippets.length} lines`;
   }
 
