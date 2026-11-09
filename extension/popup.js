@@ -1,6 +1,6 @@
 /**
  * YouTube Transcript Scraper - Popup Controller
- * Dual Mode: In-Browser Direct & Python API (youtube-transcript-api)
+ * Dual Mode: In-Browser Direct (DOM Panel + Innertube ANDROID API) & Python API (youtube-transcript-api)
  */
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -10,7 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const tabBrowserMode = document.getElementById("tab-browser-mode");
   const tabPythonMode = document.getElementById("tab-python-mode");
   const translateGroup = document.getElementById("translate-group");
-  
+
   const videoMetaBox = document.getElementById("video-meta-box");
   const videoTitleEl = document.getElementById("video-title");
   const videoIdBadge = document.getElementById("video-id-badge");
@@ -25,7 +25,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const searchInput = document.getElementById("transcript-search");
   const matchCountEl = document.getElementById("match-count");
-  const viewport = document.getElementById("transcript-viewport");
   const emptyState = document.getElementById("empty-state");
   const transcriptList = document.getElementById("transcript-list");
 
@@ -51,11 +50,11 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentVideoId = "";
   let currentVideoTitle = "";
   let currentSnippets = [];
-  let availableTracks = [];
   let backendUrl = "http://127.0.0.1:5000";
+  let isBackendOnline = false;
 
   // Load saved preferences
-  chrome.storage.local.get(["backendUrl", "preferredMode"], (res) => {
+  chrome.storage.local.get(["backendUrl", "preferredMode"], res => {
     if (res.backendUrl) {
       backendUrl = res.backendUrl;
       settingBackendUrl.value = backendUrl;
@@ -93,10 +92,14 @@ document.addEventListener("DOMContentLoaded", () => {
     backendPill.className = "status-pill status-checking";
     backendStatusText.textContent = "Checking API...";
     try {
-      const resp = await fetch(`${backendUrl}/health`, { method: "GET", signal: AbortSignal.timeout(2000) });
+      const resp = await fetch(`${backendUrl}/health`, {
+        method: "GET",
+        signal: AbortSignal.timeout(2000)
+      });
       if (resp.ok) {
         const data = await resp.json();
         const ver = data.installed_version || "OK";
+        isBackendOnline = true;
         backendPill.className = "status-pill status-online";
         backendStatusText.textContent = `API v${ver}`;
         modalInstalledVer.textContent = ver;
@@ -113,6 +116,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (e) {
       // Backend not running
     }
+    isBackendOnline = false;
     backendPill.className = "status-pill status-offline";
     backendStatusText.textContent = "API Offline";
     modalInstalledVer.textContent = "Not Running";
@@ -123,7 +127,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Detect Active YouTube Tab
   function initActiveTab() {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
       if (tabs && tabs[0]) {
         activeTab = tabs[0];
         const url = activeTab.url || "";
@@ -131,9 +135,11 @@ document.addEventListener("DOMContentLoaded", () => {
         if (videoId) {
           currentVideoId = videoId;
           videoIdBadge.textContent = `ID: ${videoId}`;
-          videoTitleEl.textContent = activeTab.title ? activeTab.title.replace(" - YouTube", "") : "YouTube Video";
+          videoTitleEl.textContent = activeTab.title
+            ? activeTab.title.replace(" - YouTube", "")
+            : "YouTube Video";
           currentVideoTitle = videoTitleEl.textContent;
-          queryPageData();
+          ensureContentScriptAndQueryPage();
         } else {
           videoTitleEl.textContent = "Not a YouTube video page";
           videoIdBadge.textContent = "Use 'Paste URL' below";
@@ -151,67 +157,56 @@ document.addEventListener("DOMContentLoaded", () => {
     return "";
   }
 
-  // Request caption tracks from page context
-  function queryPageData() {
+  // Ensure content.js is injected into the active YouTube tab even if tab wasn't refreshed
+  function ensureContentScriptAndQueryPage() {
     if (!activeTab || !activeTab.id) return;
-    chrome.tabs.sendMessage(activeTab.id, { action: "GET_PAGE_DATA" }, (res) => {
+    chrome.tabs.sendMessage(activeTab.id, { action: "GET_PAGE_DATA" }, res => {
       if (chrome.runtime.lastError || !res) {
-        // Content script might not have responded or page reloaded
+        // Dynamically inject content.js if not yet loaded
+        if (chrome.scripting && activeTab.url && activeTab.url.includes("youtube.com")) {
+          chrome.scripting
+            .executeScript({
+              target: { tabId: activeTab.id },
+              files: ["content.js"]
+            })
+            .then(() => {
+              chrome.tabs.sendMessage(activeTab.id, { action: "GET_PAGE_DATA" }, res2 => {
+                if (!chrome.runtime.lastError && res2 && res2.title) {
+                  currentVideoTitle = res2.title;
+                  videoTitleEl.textContent = res2.title;
+                }
+              });
+            })
+            .catch(() => {});
+        }
         return;
       }
       if (res.title) {
         currentVideoTitle = res.title;
         videoTitleEl.textContent = res.title;
       }
-      if (res.tracks && res.tracks.length > 0) {
-        availableTracks = res.tracks;
-        populateLanguageDropdown();
-      }
     });
   }
 
   function populateLanguageDropdown() {
+    const prevValue = langSelect.value || "en";
     langSelect.innerHTML = "";
-    
-    // We strictly support only 2 languages: English and Bangla
+
     const allowed = [
-      { code: "en", name: "English" },
-      { code: "bn", name: "Bangla (বাংলা)" }
+      { code: "en", name: "English (en)" },
+      { code: "bn", name: "Bangla (bn - বাংলা)" }
     ];
 
-    if (currentMode === "browser" && availableTracks.length > 0) {
-      const matchedTracks = availableTracks.filter(t => 
-        t.languageCode.startsWith("en") || t.languageCode.startsWith("bn")
-      );
-
-      if (matchedTracks.length > 0) {
-        matchedTracks.forEach(t => {
-          const opt = document.createElement("option");
-          opt.value = t.languageCode;
-          const label = t.languageCode.startsWith("bn") ? "Bangla (বাংলা)" : "English";
-          opt.textContent = `${label} (${t.languageCode})${t.kind === "asr" ? " [Auto]" : ""}`;
-          langSelect.appendChild(opt);
-        });
-
-        // Also ensure Bangla is selectable even if original track is English (auto-translate)
-        const hasBangla = matchedTracks.some(t => t.languageCode.startsWith("bn"));
-        if (!hasBangla) {
-          const opt = document.createElement("option");
-          opt.value = "bn";
-          opt.textContent = "Bangla (বাংলা) [Translate]";
-          langSelect.appendChild(opt);
-        }
-        return;
-      }
-    }
-
-    // Default 2 languages
     allowed.forEach(d => {
       const opt = document.createElement("option");
       opt.value = d.code;
-      opt.textContent = `${d.name} (${d.code})`;
+      opt.textContent = d.name;
       langSelect.appendChild(opt);
     });
+
+    if (prevValue === "bn" || prevValue === "en") {
+      langSelect.value = prevValue;
+    }
   }
 
   // Toggle manual URL input
@@ -253,46 +248,184 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function fetchTranscript() {
     if (!currentVideoId) {
-      alert("No active YouTube video selected.");
+      alert("No YouTube video selected. Open a YouTube video or paste a URL.");
       return;
     }
 
-    setLoading(true, "Scraping transcript...");
+    setLoading(true, "Extracting transcript...");
 
     if (currentMode === "browser") {
-      fetchViaBrowserMode();
+      await fetchViaBrowserMode();
     } else {
-      fetchViaPythonMode();
+      await fetchViaPythonMode();
     }
   }
 
-  // 1. In-Browser Direct Mode (via content.js)
-  function fetchViaBrowserMode() {
-    if (!activeTab || !activeTab.id) {
-      fallbackToPythonDueToNoTab("No active browser tab found. Trying Python API...");
-      return;
+  // Direct Innertube ANDROID Extractor inside Popup (works even without active YouTube tab)
+  async function extractDirectFromPopup(videoId, targetLang) {
+    const watchResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+    const html = await watchResp.text();
+
+    // Update video title if available
+    const titleMatch = html.match(/<title>(.*?)<\/title>/);
+    if (titleMatch && titleMatch[1]) {
+      currentVideoTitle = titleMatch[1].replace(" - YouTube", "").trim();
+      videoTitleEl.textContent = currentVideoTitle;
     }
 
+    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"/);
+    if (!apiKeyMatch) {
+      throw new Error("Could not extract YouTube Innertube API key.");
+    }
+    const apiKey = apiKeyMatch[1];
+
+    const playerResp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "ANDROID",
+            clientVersion: "20.10.38"
+          }
+        },
+        videoId: videoId
+      })
+    });
+
+    const playerData = await playerResp.json();
+    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+    if (!tracks || tracks.length === 0) {
+      const reason = playerData?.playabilityStatus?.reason || "";
+      const isLive = playerData?.videoDetails?.isLiveContent;
+      if (isLive || reason.toLowerCase().includes("live")) {
+        throw new Error(
+          `Subtitles/closed captions are unavailable on YouTube for this video (${videoId}). This is a Live Stream recording where YouTube has not generated captions yet.`
+        );
+      }
+      throw new Error(
+        `Subtitles/closed captions are disabled or unavailable on YouTube for this video (${videoId}).`
+      );
+    }
+
+    let track = tracks.find(t => t.languageCode.startsWith(targetLang));
+    let fetchUrl = "";
+    if (track) {
+      fetchUrl = track.baseUrl.replace("&fmt=srv3", "");
+    } else {
+      const baseTrack = tracks.find(t => t.languageCode.startsWith("en")) || tracks[0];
+      fetchUrl = baseTrack.baseUrl.replace("&fmt=srv3", "") + `&tlang=${targetLang}`;
+    }
+
+    const xmlResp = await fetch(fetchUrl);
+    if (xmlResp.status === 429) {
+      throw new Error(
+        "YouTube rate-limited direct timedtext requests. Open the video tab on YouTube and click Scrape to use the DOM Extractor."
+      );
+    }
+    const xmlText = await xmlResp.text();
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+    const snippets = [];
+
+    const textNodes = xmlDoc.getElementsByTagName("text");
+    if (textNodes && textNodes.length > 0) {
+      for (let i = 0; i < textNodes.length; i++) {
+        const node = textNodes[i];
+        const start = parseFloat(node.getAttribute("start") || "0");
+        const dur = parseFloat(node.getAttribute("dur") || "2.0");
+        const doc = new DOMParser().parseFromString(node.textContent || "", "text/html");
+        const clean = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+        if (clean) snippets.push({ text: clean, start, duration: dur });
+      }
+      if (snippets.length > 0) return snippets;
+    }
+
+    const pNodes = xmlDoc.getElementsByTagName("p");
+    if (pNodes && pNodes.length > 0) {
+      for (let i = 0; i < pNodes.length; i++) {
+        const node = pNodes[i];
+        const startMs = parseFloat(node.getAttribute("t") || "0");
+        const durMs = parseFloat(node.getAttribute("d") || "2000");
+        const doc = new DOMParser().parseFromString(node.textContent || "", "text/html");
+        const clean = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+        if (clean) {
+          snippets.push({
+            text: clean,
+            start: +(startMs / 1000.0).toFixed(2),
+            duration: +(durMs / 1000.0).toFixed(2)
+          });
+        }
+      }
+    }
+
+    return snippets;
+  }
+
+  // 1. In-Browser Direct Mode
+  async function fetchViaBrowserMode() {
     const selectedLang = langSelect.value || "en";
-    chrome.tabs.sendMessage(activeTab.id, {
-      action: "FETCH_PAGE_TRANSCRIPT",
-      languageCode: selectedLang
-    }, (res) => {
-      if (chrome.runtime.lastError || !res || !res.success) {
-        const err = res ? res.error : "Could not connect to YouTube page.";
-        console.warn("In-Browser fetch failed:", err);
-        // Fallback automatically to Python API if running
-        fallbackToPythonDueToNoTab(`In-browser extraction unavailable (${err}). Trying Python API...`);
+    const tabVideoId = activeTab && activeTab.url ? extractVideoId(activeTab.url) : "";
+
+    // If user is on the matching YouTube tab, use content.js (DOM Panel + Innertube)
+    if (activeTab && activeTab.id && tabVideoId === currentVideoId) {
+      try {
+        // Ensure content.js is injected first
+        if (chrome.scripting) {
+          await chrome.scripting
+            .executeScript({
+              target: { tabId: activeTab.id },
+              files: ["content.js"]
+            })
+            .catch(() => {});
+        }
+
+        const response = await new Promise(resolve => {
+          chrome.tabs.sendMessage(
+            activeTab.id,
+            { action: "FETCH_PAGE_TRANSCRIPT", languageCode: selectedLang },
+            res => {
+              if (chrome.runtime.lastError) {
+                resolve({ success: false, error: chrome.runtime.lastError.message });
+              } else {
+                resolve(res || { success: false, error: "No response from page." });
+              }
+            }
+          );
+        });
+
+        if (response && response.success && response.snippets && response.snippets.length > 0) {
+          currentSnippets = response.snippets;
+          renderTranscript(currentSnippets);
+          return;
+        }
+
+        if (response && response.error && response.error.toLowerCase().includes("unavailable")) {
+          showErrorState(response.error);
+          return;
+        }
+      } catch (e) {
+        console.warn("Tab message error:", e);
+      }
+    }
+
+    // Fallback: Direct Innertube ANDROID extraction inside Popup
+    try {
+      const snippets = await extractDirectFromPopup(currentVideoId, selectedLang);
+      if (snippets && snippets.length > 0) {
+        currentSnippets = snippets;
+        renderTranscript(currentSnippets);
         return;
       }
-      currentSnippets = res.snippets || [];
-      renderTranscript(currentSnippets);
-    });
-  }
-
-  function fallbackToPythonDueToNoTab(msg) {
-    setLoading(true, msg);
-    fetchViaPythonMode();
+    } catch (directErr) {
+      // Only try Python API if backend is actually online and error isn't "subtitles unavailable"
+      if (isBackendOnline && !directErr.message.toLowerCase().includes("unavailable")) {
+        await fetchViaPythonMode();
+        return;
+      }
+      showErrorState(directErr.message);
+    }
   }
 
   // 2. Python API Mode (via youtube-transcript-api)
@@ -314,17 +447,21 @@ document.addEventListener("DOMContentLoaded", () => {
       currentSnippets = data.snippets || [];
       renderTranscript(currentSnippets);
     } catch (err) {
-      setLoading(false);
-      emptyState.style.display = "flex";
-      transcriptList.style.display = "none";
-      emptyState.innerHTML = `
-        <div style="color:#ff0033; font-weight:600; margin-bottom:8px;">Scrape Failed</div>
-        <p style="font-size:12px; line-height:1.4;">${err.message}</p>
-        <div style="font-size:11px; color:#888; margin-top:8px;">
-          Tip: If running Python mode, make sure <code>run_server.bat</code> is running, or switch to <strong>⚡ In-Browser Direct</strong> mode.
-        </div>
-      `;
+      showErrorState(
+        err.message.includes("Failed to fetch")
+          ? "Python API Server is offline. Switch to '⚡ In-Browser Direct' mode or start backend/run_server.bat."
+          : err.message
+      );
     }
+  }
+
+  function showErrorState(errorMsg) {
+    emptyState.style.display = "flex";
+    transcriptList.style.display = "none";
+    emptyState.innerHTML = `
+      <div style="color:#ff4d4d; font-weight:600; margin-bottom:6px;">⚠️ Transcript Unavailable</div>
+      <p style="font-size:12px; line-height:1.45; color:#ddd;">${escapeHtml(errorMsg)}</p>
+    `;
   }
 
   function setLoading(loading, text = "Loading...") {
@@ -333,12 +470,12 @@ document.addEventListener("DOMContentLoaded", () => {
       transcriptList.style.display = "none";
       emptyState.innerHTML = `
         <div style="margin-bottom:8px;">
-          <svg width="28" height="28" viewBox="0 0 24 24" stroke="#ff0033" stroke-width="2" fill="none" class="spin">
+          <svg width="28" height="28" viewBox="0 0 24 24" stroke="#ff0033" stroke-width="2" fill="none">
             <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
             <path d="M12 2a10 10 0 0 1 10 10"></path>
           </svg>
         </div>
-        <p>${text}</p>
+        <p>${escapeHtml(text)}</p>
       `;
     }
   }
@@ -372,7 +509,6 @@ document.addEventListener("DOMContentLoaded", () => {
         <span class="snippet-text">${displayText}</span>
       `;
 
-      // Click to seek video in the active YouTube tab!
       row.addEventListener("click", () => {
         if (activeTab && activeTab.id) {
           chrome.tabs.sendMessage(activeTab.id, { action: "SEEK_VIDEO", time: s.start });
@@ -386,7 +522,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Real-Time Search Filter
-  searchInput.addEventListener("input", (e) => {
+  searchInput.addEventListener("input", e => {
     const q = e.target.value.toLowerCase().trim();
     if (!q) {
       renderTranscript(currentSnippets);
@@ -396,7 +532,6 @@ document.addEventListener("DOMContentLoaded", () => {
     renderTranscript(filtered, q);
   });
 
-  // Time Formatter
   function formatTime(seconds) {
     const s = Math.floor(seconds);
     const hrs = Math.floor(s / 3600);
@@ -409,23 +544,27 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function escapeHtml(text) {
-    return text.replace(/[&<>"']/g, m => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    return (text || "").replace(/[&<>"']/g, m => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;"
     }[m]));
   }
 
   function escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   // Dropdown Handling
-  btnCopy.addEventListener("click", (e) => {
+  btnCopy.addEventListener("click", e => {
     e.stopPropagation();
     copyMenu.parentElement.classList.toggle("open");
     downloadMenu.parentElement.classList.remove("open");
   });
 
-  btnDownload.addEventListener("click", (e) => {
+  btnDownload.addEventListener("click", e => {
     e.stopPropagation();
     downloadMenu.parentElement.classList.toggle("open");
     copyMenu.parentElement.classList.remove("open");
@@ -437,7 +576,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Copy Actions
-  document.getElementById("action-copy-plain").addEventListener("click", (e) => {
+  document.getElementById("action-copy-plain").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
       const text = currentSnippets.map(s => s.text).join(" ");
@@ -445,7 +584,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("action-copy-timestamps").addEventListener("click", (e) => {
+  document.getElementById("action-copy-timestamps").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
       const text = currentSnippets.map(s => `[${formatTime(s.start)}] ${s.text}`).join("\n");
@@ -453,7 +592,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("action-copy-markdown").addEventListener("click", (e) => {
+  document.getElementById("action-copy-markdown").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
       const md = generateMarkdown();
@@ -476,7 +615,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Export / Download Actions
-  document.getElementById("action-download-txt").addEventListener("click", (e) => {
+  document.getElementById("action-download-txt").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
       const text = currentSnippets.map(s => s.text).join(" ");
@@ -484,7 +623,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("action-download-srt").addEventListener("click", (e) => {
+  document.getElementById("action-download-srt").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
       const srt = generateSRT();
@@ -492,7 +631,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("action-download-vtt").addEventListener("click", (e) => {
+  document.getElementById("action-download-vtt").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
       const vtt = generateVTT();
@@ -500,20 +639,24 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  document.getElementById("action-download-json").addEventListener("click", (e) => {
+  document.getElementById("action-download-json").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
-      const json = JSON.stringify({
-        video_id: currentVideoId,
-        title: currentVideoTitle,
-        count: currentSnippets.length,
-        transcript: currentSnippets
-      }, null, 2);
+      const json = JSON.stringify(
+        {
+          video_id: currentVideoId,
+          title: currentVideoTitle,
+          count: currentSnippets.length,
+          transcript: currentSnippets
+        },
+        null,
+        2
+      );
       downloadBlob(json, `${sanitizeFilename(currentVideoTitle)}.json`, "application/json");
     }
   });
 
-  document.getElementById("action-download-md").addEventListener("click", (e) => {
+  document.getElementById("action-download-md").addEventListener("click", e => {
     e.preventDefault();
     if (verifySnippetsExist()) {
       const md = generateMarkdown();
@@ -591,7 +734,7 @@ document.addEventListener("DOMContentLoaded", () => {
     modalOverlay.style.display = "none";
   });
 
-  modalOverlay.addEventListener("click", (e) => {
+  modalOverlay.addEventListener("click", e => {
     if (e.target === modalOverlay) {
       modalOverlay.style.display = "none";
     }
@@ -601,7 +744,11 @@ document.addEventListener("DOMContentLoaded", () => {
     backendUrl = settingBackendUrl.value.trim().replace(/\/+$/, "");
     chrome.storage.local.set({ backendUrl });
     const ok = await checkBackendHealth();
-    alert(ok ? "Connected successfully to Python API!" : "Could not connect to Python API. Check if server is running.");
+    alert(
+      ok
+        ? "Connected successfully to Python API!"
+        : "Could not connect to Python API. Check if server is running."
+    );
   });
 
   btnCheckUpdates.addEventListener("click", async () => {
@@ -625,7 +772,12 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   btnUpgradeApi.addEventListener("click", async () => {
-    if (!confirm("This will upgrade 'youtube-transcript-api' in your backend to the latest upstream version. Proceed?")) return;
+    if (
+      !confirm(
+        "This will upgrade 'youtube-transcript-api' in your backend to the latest upstream version. Proceed?"
+      )
+    )
+      return;
 
     modalUpdateStatus.textContent = "Upgrading package via pip... Please wait...";
     modalUpdateStatus.style.color = "#fbc02d";
@@ -650,6 +802,4 @@ document.addEventListener("DOMContentLoaded", () => {
       modalUpdateStatus.style.color = "#ff0033";
     }
   });
-
 });
-
