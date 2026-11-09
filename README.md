@@ -72,7 +72,8 @@ flowchart TD
 * **⚡ Dual-Mode Integration:**
   * **⚡ In-Browser Direct (Zero-Setup):** Scrapes captions directly from your active YouTube tab using your existing browser session. *Immune to IP bans or HTTP 429 rate-limiting.*
   * **🐍 Python API Mode (`backend/app.py`):** Communicates with local REST backend providing formatters, audio MP3 extraction, and upstream updates.
-* **🎵 Direct Audio (.mp3) Download:** One-click download of the video's audio track for videos without captions, ready to feed into any AI agent.
+* **🎵 Direct High-Speed Audio (.mp3) Download:** One-click download of the video's audio track with parallel multi-threading and maximum internet bandwidth utilization, ready to feed into any AI agent.
+* **⚡ Modern UI Redesign:** Sleek header with interactive API status pill, persistent quick-audio download banner, and direct protocol integration.
 * **↗️ Dedicated Pop-out Floating Window:** Keep the scraper open in an independent window that never dismisses when clicking elsewhere.
 * **⏱️ Interactive Clickable Timestamps:** Clicking any timestamp in the transcript automatically seeks the YouTube player to that exact moment.
 * **🔍 Real-Time Search & Highlight:** Instantly search through transcript lines with keyword highlighting and match counts.

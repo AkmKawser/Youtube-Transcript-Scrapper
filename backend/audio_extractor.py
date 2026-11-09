@@ -26,7 +26,8 @@ def get_cached_mp3_path(video_id: str) -> str:
 
 def download_raw_audio(video_id: str) -> Optional[str]:
     """
-    Downloads raw audio stream for a YouTube video using yt-dlp.
+    Downloads raw audio stream for a YouTube video using yt-dlp at maximum throughput.
+    Optimized for highest network speed using multi-threading, large chunk buffers, and aggressive reconnects.
     Returns path to downloaded raw file or None.
     """
     temp_dir = tempfile.gettempdir()
@@ -38,6 +39,17 @@ def download_raw_audio(video_id: str) -> Optional[str]:
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        # Maximize download speed & network throughput:
+        "concurrent_fragment_downloads": 16,     # Parallel fragment streaming
+        "buffersize": 4 * 1024 * 1024,           # 4MB internal disk/socket buffer
+        "http_chunk_size": 20971520,             # 20MB chunk request for high bandwidth
+        "retries": 15,                           # Auto-retry on connection drops
+        "fragment_retries": 15,
+        "file_access_retries": 5,
+        "nocheckcertificate": True,              # Bypass SSL latency verification
+        "socket_timeout": 30,
+        "extractor_retries": 5,
+        "noprogress": True
     }
 
     url = f"https://www.youtube.com/watch?v={video_id}"

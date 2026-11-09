@@ -35,6 +35,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const btnSettings = document.getElementById("btn-settings");
   const btnPopout = document.getElementById("btn-popout");
+  const btnQuickDownloadAudio = document.getElementById("btn-quick-download-audio");
   const modalOverlay = document.getElementById("modal-overlay");
   const modalCloseBtn = document.getElementById("modal-close-btn");
   const settingBackendUrl = document.getElementById("setting-backend-url");
@@ -116,43 +117,84 @@ document.addEventListener("DOMContentLoaded", () => {
     populateLanguageDropdown();
   }
 
-  // Check Backend Health
+  // Check Backend Health with automatic fallback across 127.0.0.1 and localhost
   async function checkBackendHealth() {
     backendPill.className = "status-pill status-checking";
     backendStatusText.textContent = "Checking API...";
-    try {
-      const resp = await fetch(`${backendUrl}/health`, {
-        method: "GET",
-        signal: AbortSignal.timeout(2000)
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        const ver = data.installed_version || "OK";
-        isBackendOnline = true;
-        backendPill.className = "status-pill status-online";
-        backendStatusText.textContent = `API v${ver}`;
-        modalInstalledVer.textContent = ver;
-        modalLatestVer.textContent = data.latest_pypi_version || ver;
-        if (data.update_available) {
-          modalUpdateStatus.textContent = "✨ Upstream update available on PyPI!";
-          modalUpdateStatus.style.color = "#2ba640";
-        } else {
-          modalUpdateStatus.textContent = "Up to date with latest release.";
-          modalUpdateStatus.style.color = "#aaaaaa";
-        }
-        return true;
-      }
-    } catch (e) {
-      // Backend not running
+
+    const candidates = [backendUrl];
+    if (backendUrl.includes("127.0.0.1")) {
+      candidates.push(backendUrl.replace("127.0.0.1", "localhost"));
+    } else if (backendUrl.includes("localhost")) {
+      candidates.push(backendUrl.replace("localhost", "127.0.0.1"));
     }
+
+    for (const target of candidates) {
+      try {
+        const resp = await fetch(`${target}/health`, {
+          method: "GET",
+          signal: AbortSignal.timeout(1800)
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const ver = data.installed_version || "OK";
+          isBackendOnline = true;
+          backendUrl = target;
+          chrome.storage.local.set({ backendUrl });
+          if (settingBackendUrl) settingBackendUrl.value = backendUrl;
+
+          backendPill.className = "status-pill status-online";
+          backendStatusText.textContent = `API v${ver}`;
+          backendPill.title = `Python API Server Online at ${target}. Click to refresh.`;
+          modalInstalledVer.textContent = ver;
+          modalLatestVer.textContent = data.latest_pypi_version || ver;
+          if (data.update_available) {
+            modalUpdateStatus.textContent = "✨ Upstream update available on PyPI!";
+            modalUpdateStatus.style.color = "#2ba640";
+          } else {
+            modalUpdateStatus.textContent = "Up to date with latest release.";
+            modalUpdateStatus.style.color = "#aaaaaa";
+          }
+          return true;
+        }
+      } catch (e) {
+        // Try next candidate
+      }
+    }
+
     isBackendOnline = false;
     backendPill.className = "status-pill status-offline";
     backendStatusText.textContent = "API Offline";
+    backendPill.title = "Python API is offline. Click here to launch backend/run_server.bat";
     modalInstalledVer.textContent = "Not Running";
-    modalUpdateStatus.textContent = "Run backend/run_server.bat to start Python API.";
+    modalUpdateStatus.textContent = "Double-click backend/run_server.bat to start Python API.";
     modalUpdateStatus.style.color = "#ff0033";
     return false;
   }
+
+  // Click on backend status pill: if offline, launch server; if online, refresh health
+  backendPill.addEventListener("click", () => {
+    if (!isBackendOnline) {
+      window.location.href = "yt-transcript://start";
+      setLoading(true, "Launching Python Server... Checking connection...");
+      let checks = 0;
+      const interval = setInterval(async () => {
+        checks++;
+        const online = await checkBackendHealth();
+        if (online) {
+          clearInterval(interval);
+          setLoading(false);
+          renderTranscript(currentSnippets);
+        } else if (checks > 12) {
+          clearInterval(interval);
+          setLoading(false);
+          renderTranscript(currentSnippets);
+        }
+      }, 1500);
+    } else {
+      checkBackendHealth();
+    }
+  });
 
   // Detect Active YouTube Tab
   function initActiveTab() {
@@ -1066,28 +1108,43 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnDownloadMp3) {
     btnDownloadMp3.addEventListener("click", e => {
       e.preventDefault();
-      if (!currentVideoId) {
-        alert("No video selected. Please load or scrape a video first.");
-        return;
+      triggerAudioDownload();
+    });
+  }
+
+  // Trigger Audio Download with automatic server check and launch
+  function triggerAudioDownload() {
+    if (!currentVideoId) {
+      alert("Please open a YouTube video or paste a video URL first.");
+      return;
+    }
+    if (!isBackendOnline) {
+      showErrorState(
+        "Python backend server is required to download high-speed audio (.mp3). Click 'Start Python AI Server' below:",
+        true
+      );
+      window.location.href = "yt-transcript://start";
+      return;
+    }
+    const audioUrl = `${backendUrl}/api/audio?video_id=${currentVideoId}`;
+    setLoading(true, "Downloading high-speed YouTube audio and converting to MP3...");
+    chrome.downloads.download({
+      url: audioUrl,
+      filename: `${sanitizeFilename(currentVideoTitle || currentVideoId)}.mp3`,
+      saveAs: true
+    }, downloadId => {
+      setLoading(false);
+      renderTranscript(currentSnippets);
+      if (chrome.runtime.lastError || !downloadId) {
+        window.open(audioUrl, "_blank");
       }
-      if (!isBackendOnline) {
-        showErrorState(
-          "Python API server is required to download MP3 audio. Click below to start the server:",
-          true
-        );
-        return;
-      }
-      const audioUrl = `${backendUrl}/api/audio?video_id=${currentVideoId}`;
-      chrome.downloads.download({
-        url: audioUrl,
-        filename: `${sanitizeFilename(currentVideoTitle || currentVideoId)}.mp3`,
-        saveAs: true
-      }, downloadId => {
-        if (chrome.runtime.lastError || !downloadId) {
-          // Fallback to window download
-          window.open(audioUrl, "_blank");
-        }
-      });
+    });
+  }
+
+  // Quick audio download button in banner
+  if (btnQuickDownloadAudio) {
+    btnQuickDownloadAudio.addEventListener("click", () => {
+      triggerAudioDownload();
     });
   }
 

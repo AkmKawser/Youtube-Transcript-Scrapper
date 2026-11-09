@@ -304,6 +304,7 @@ def trigger_update():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 Starting YouTube Transcript Scraper API on http://127.0.0.1:{port}")
+    host = os.environ.get("HOST", "0.0.0.0")
+    print(f"🚀 Starting YouTube Transcript Scraper API on http://127.0.0.1:{port} (bound to {host})")
     print(f"📦 youtube-transcript-api version: {updater.get_current_version()}")
-    app.run(host="127.0.0.1", port=port, debug=False)
+    app.run(host=host, port=port, debug=False, threaded=True)

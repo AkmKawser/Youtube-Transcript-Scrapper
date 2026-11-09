@@ -75,6 +75,14 @@ body {
   border-radius: 12px;
   background-color: rgba(255, 255, 255, 0.08);
   color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s ease;
+}
+
+.status-pill:hover {
+  background-color: rgba(255, 255, 255, 0.16);
+  color: var(--text-primary);
 }
 
 .status-dot {
@@ -87,6 +95,63 @@ body {
 .status-online .status-dot { background-color: var(--accent-green); }
 .status-offline .status-dot { background-color: var(--accent-red); }
 .status-checking .status-dot { background-color: var(--accent-yellow); }
+
+/* Quick Audio Banner */
+.quick-audio-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: linear-gradient(90deg, rgba(62, 166, 255, 0.12), rgba(62, 166, 255, 0.04));
+  border-bottom: 1px solid rgba(62, 166, 255, 0.2);
+  gap: 10px;
+}
+
+.quick-audio-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-audio-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.quick-audio-text {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #cce7ff;
+}
+
+.quick-audio-text strong {
+  color: #fff;
+}
+
+.btn-audio-quick {
+  background-color: #3ea6ff;
+  color: #0f0f0f;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.btn-audio-quick:hover {
+  background-color: #65b8ff;
+  transform: translateY(-1px);
+}
+
+.btn-audio-quick:active {
+  transform: translateY(0);
+}
 
 .icon-btn {
   background: none;

@@ -17,7 +17,7 @@ reg add "HKCU\Software\Classes\yt-transcript" /ve /d "URL:YouTube Transcript Bac
 reg add "HKCU\Software\Classes\yt-transcript" /v "URL Protocol" /d "" /f >nul
 reg add "HKCU\Software\Classes\yt-transcript\shell" /f >nul
 reg add "HKCU\Software\Classes\yt-transcript\shell\open" /f >nul
-reg add "HKCU\Software\Classes\yt-transcript\shell\open\command" /ve /d "\"cmd.exe\" /c \"\"%SERVER_BAT%\"\"" /f >nul
+reg add "HKCU\Software\Classes\yt-transcript\shell\open\command" /ve /d "cmd.exe /c start \"\" \"%SERVER_BAT%\"" /f >nul
 
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] yt-transcript:// protocol registered successfully!

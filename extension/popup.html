@@ -17,7 +17,7 @@
         <span class="brand-name">Transcript Scraper</span>
       </div>
       <div class="header-tools">
-        <div id="backend-status-pill" class="status-pill status-checking" title="Connecting to Python Backend API...">
+        <div id="backend-status-pill" class="status-pill status-checking" role="button" tabindex="0" title="Click to test/start Python Backend">
           <span class="status-dot"></span>
           <span id="backend-status-text">Checking API...</span>
         </div>
@@ -44,6 +44,19 @@
       </button>
       <button class="mode-tab" id="tab-python-mode">
         🐍 Python API
+      </button>
+    </div>
+
+    <!-- Quick Audio Banner / Button for Caption-less Videos & AI Agents -->
+    <div class="quick-audio-bar" id="quick-audio-bar">
+      <div class="quick-audio-info">
+        <span class="quick-audio-icon">🎵</span>
+        <div class="quick-audio-text">
+          <strong>No captions?</strong> Download audio (.mp3) to feed to ChatGPT, Claude, Gemini, or Whisper AI
+        </div>
+      </div>
+      <button id="btn-quick-download-audio" class="btn-audio-quick" title="High-Speed Audio (.mp3) Download">
+        ⬇ Download .mp3
       </button>
     </div>
 
