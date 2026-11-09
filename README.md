@@ -50,11 +50,12 @@ flowchart TD
 1. **Direct Native Caption Ingestion (0ms Latency):**
    - Automatically detects and copies native or auto-generated YouTube captions.
    - Fully compatible with YouTube's **2026 Modern Transcript Panel** (`PAmodern_transcript_view` with `<transcript-segment-view-model>`) and legacy panels.
-2. **Instant Audio (.mp3) Extraction for AI Agents:**
+2. **Instant In-Browser Audio Download (Zero Python Required):**
    - When a video has **no captions** (e.g. newly streamed live videos or newly uploaded videos):
-     - Extracts the audio stream with `yt-dlp`.
-     - Automatically transcodes into standard `audio.mp3` in 1–2 seconds using in-memory `PyAV` (no external `ffmpeg.exe` required).
-     - Allows users to download the `.mp3` with one click and feed it directly to ChatGPT, Claude, Gemini, or Whisper AI.
+     - The Chrome extension extracts the audio stream directly from YouTube's Innertube player.
+     - Downloads the audio file straight into Chrome's download shelf with one click at maximum internet speed.
+     - No Python server, terminal window, or external dependencies required in browser mode.
+     - Users can also extract via Python CLI (`python cli.py URL --audio -o audio.mp3`) if preferred.
 3. **Strict Two-Language Output Pipeline (`English` & `Bangla`):**
    - Output transcripts are strictly constrained to **English (`en`)** or **Bangla (`bn`)**.
    - Hindi and foreign language sources are automatically converted to English or Bangla.
@@ -72,7 +73,7 @@ flowchart TD
 * **⚡ Dual-Mode Integration:**
   * **⚡ In-Browser Direct (Zero-Setup):** Scrapes captions directly from your active YouTube tab using your existing browser session. *Immune to IP bans or HTTP 429 rate-limiting.*
   * **🐍 Python API Mode (`backend/app.py`):** Communicates with local REST backend providing formatters, audio MP3 extraction, and upstream updates.
-* **🎵 Direct High-Speed Audio (.mp3) Download:** One-click download of the video's audio track with parallel multi-threading and maximum internet bandwidth utilization, ready to feed into any AI agent.
+* **🎵 Direct High-Speed Audio Download (Zero Setup):** One-click download of the video's audio track directly inside Chrome with zero Python server requirement, ready to feed into any AI agent.
 * **⚡ Modern UI Redesign:** Sleek header with interactive API status pill, persistent quick-audio download banner, and direct protocol integration.
 * **↗️ Dedicated Pop-out Floating Window:** Keep the scraper open in an independent window that never dismisses when clicking elsewhere.
 * **⏱️ Interactive Clickable Timestamps:** Clicking any timestamp in the transcript automatically seeks the YouTube player to that exact moment.

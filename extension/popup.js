@@ -402,6 +402,7 @@ document.addEventListener("DOMContentLoaded", () => {
               if (!pResp.ok) return { success: false };
               const pData = await pResp.json();
               const tracks = pData?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+              const adaptiveFormats = pData?.streamingData?.adaptiveFormats || [];
               const dashUrl = pData?.streamingData?.dashManifestUrl || null;
               let dashVttInfo = null;
               if (dashUrl) {
@@ -424,7 +425,7 @@ document.addEventListener("DOMContentLoaded", () => {
                   }
                 } catch (e) {}
               }
-              return { success: true, apiKey: key, tracks, dashUrl, dashVttInfo };
+              return { success: true, apiKey: key, tracks, dashUrl, dashVttInfo, adaptiveFormats };
             } catch (err) {
               return { success: false, error: err.message };
             }
@@ -483,6 +484,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    const adaptiveFormats = playerData?.streamingData?.adaptiveFormats || [];
     const dashUrl = playerData?.streamingData?.dashManifestUrl || null;
     let dashVttInfo = null;
 
@@ -507,7 +509,7 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch (e) {}
     }
 
-    return { apiKey, tracks, dashUrl, dashVttInfo };
+    return { apiKey, tracks, dashUrl, dashVttInfo, adaptiveFormats };
   }
 
   // Direct Innertube ANDROID + Live DVR Extractor inside Popup
@@ -818,43 +820,22 @@ document.addEventListener("DOMContentLoaded", () => {
   function showAudioDownloadState(message) {
     emptyState.style.display = "flex";
     transcriptList.style.display = "none";
-    const audioUrl = `${backendUrl}/api/audio?video_id=${currentVideoId}`;
 
     emptyState.innerHTML = `
       <div style="color:#3ea6ff; font-weight:600; font-size:14px; margin-bottom:8px;">🎵 Audio Ready for AI Agent</div>
       <p style="font-size:12px; line-height:1.5; color:#ddd; margin-bottom:14px;">${escapeHtml(message)}</p>
       <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
         <button id="btn-download-mp3-card" class="btn-primary" style="padding:10px 18px; font-weight:600; font-size:13px; border-radius:6px; cursor:pointer;">
-          ⬇ Download Audio (.mp3)
+          ⬇ Download Audio File
         </button>
-        <span style="font-size:11px; color:#888;">Feed this MP3 to ChatGPT, Claude, Gemini, or Whisper AI</span>
+        <span style="font-size:11px; color:#888;">Feed this audio directly to ChatGPT, Claude, Gemini, or Whisper AI</span>
       </div>
     `;
 
     const downloadCardBtn = document.getElementById("btn-download-mp3-card");
     if (downloadCardBtn) {
       downloadCardBtn.addEventListener("click", () => {
-        if (!isBackendOnline) {
-          showErrorState(
-            "Python backend server is required to download the audio stream. Click below to start the server:",
-            true
-          );
-          return;
-        }
-        setLoading(true, "Downloading and converting YouTube audio to MP3...");
-        chrome.downloads.download({
-          url: audioUrl,
-          filename: `${sanitizeFilename(currentVideoTitle || currentVideoId)}.mp3`,
-          saveAs: true
-        }, downloadId => {
-          setLoading(false);
-          showAudioDownloadState(
-            "Audio download started! Feed this MP3 into your preferred agent or translation tool."
-          );
-          if (chrome.runtime.lastError || !downloadId) {
-            window.open(audioUrl, "_blank");
-          }
-        });
+        triggerAudioDownload();
       });
     }
   }
@@ -1112,33 +1093,61 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Trigger Audio Download with automatic server check and launch
-  function triggerAudioDownload() {
+  // Trigger Audio Download directly inside the browser (100% In-Browser, Zero Python Server required)
+  async function triggerAudioDownload() {
     if (!currentVideoId) {
       alert("Please open a YouTube video or paste a video URL first.");
       return;
     }
-    if (!isBackendOnline) {
-      showErrorState(
-        "Python backend server is required to download high-speed audio (.mp3). Click 'Start Python AI Server' below:",
-        true
+    setLoading(true, "Extracting audio stream directly from YouTube...");
+
+    try {
+      const { adaptiveFormats } = await fetchPlayerAndDashInfo(currentVideoId);
+      const audioFormats = (adaptiveFormats || []).filter(
+        f => f.mimeType && f.mimeType.includes("audio") && f.url
       );
-      window.location.href = "yt-transcript://start";
+
+      if (audioFormats.length > 0) {
+        audioFormats.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        const best = audioFormats[0];
+        const isMp4 = best.mimeType.includes("mp4");
+        const ext = isMp4 ? "m4a" : "webm";
+        const filename = `${sanitizeFilename(currentVideoTitle || currentVideoId)}.${ext}`;
+
+        chrome.downloads.download({
+          url: best.url,
+          filename: filename,
+          saveAs: true
+        }, downloadId => {
+          setLoading(false);
+          renderTranscript(currentSnippets);
+          if (chrome.runtime.lastError || !downloadId) {
+            window.open(best.url, "_blank");
+          }
+        });
+        return;
+      }
+    } catch (err) {
+      console.warn("Direct browser audio extraction warning:", err);
+    }
+
+    // Fallback if local backend happens to be active
+    if (isBackendOnline) {
+      const audioUrl = `${backendUrl}/api/audio?video_id=${currentVideoId}`;
+      chrome.downloads.download({
+        url: audioUrl,
+        filename: `${sanitizeFilename(currentVideoTitle || currentVideoId)}.mp3`,
+        saveAs: true
+      }, () => {
+        setLoading(false);
+        renderTranscript(currentSnippets);
+      });
       return;
     }
-    const audioUrl = `${backendUrl}/api/audio?video_id=${currentVideoId}`;
-    setLoading(true, "Downloading high-speed YouTube audio and converting to MP3...");
-    chrome.downloads.download({
-      url: audioUrl,
-      filename: `${sanitizeFilename(currentVideoTitle || currentVideoId)}.mp3`,
-      saveAs: true
-    }, downloadId => {
-      setLoading(false);
-      renderTranscript(currentSnippets);
-      if (chrome.runtime.lastError || !downloadId) {
-        window.open(audioUrl, "_blank");
-      }
-    });
+
+    setLoading(false);
+    renderTranscript(currentSnippets);
+    alert("Could not extract direct audio stream for this video.");
   }
 
   // Quick audio download button in banner
