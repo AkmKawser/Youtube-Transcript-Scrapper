@@ -8,8 +8,8 @@
  *  4. Injected "📝 Transcript" button and side drawer right on the YouTube page.
  */
 
-if (!window.__ytsContentScriptLoaded) {
-  window.__ytsContentScriptLoaded = true;
+if (!window.__ytsContentScriptV3Loaded) {
+  window.__ytsContentScriptV3Loaded = true;
 
   // Helper to extract video ID from URL
   function getCurrentVideoId() {
@@ -119,10 +119,8 @@ if (!window.__ytsContentScriptLoaded) {
     return snippets.length > 0 ? snippets : null;
   }
 
-  /**
-   * ENGINE 2: Innertube ANDROID Player API (Direct port of jdepoix/youtube-transcript-api v1.2.5)
-   */
-  async function extractViaInnertubeAndroid(videoId, targetLang = "en") {
+  // Helper to get Innertube ANDROID player data + DASH VTT manifest info from page origin
+  async function getPagePlayerAndDashInfo(videoId) {
     const watchResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { credentials: "include" });
     const html = await watchResp.text();
 
@@ -150,12 +148,50 @@ if (!window.__ytsContentScriptLoaded) {
       throw new Error(`Innertube player request failed with status ${playerResp.status}`);
     }
 
-    const playerData = await playerResp.json();
-    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    const playerText = await playerResp.text();
+    let playerData;
+    try {
+      playerData = JSON.parse(playerText);
+    } catch (e) {
+      throw new Error("Invalid JSON response from YouTube Innertube player API.");
+    }
+
+    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    const dashUrl = playerData?.streamingData?.dashManifestUrl || null;
+    let dashVttInfo = null;
+
+    if ((!tracks || tracks.length === 0) && dashUrl) {
+      try {
+        const rd = await fetch(dashUrl);
+        if (rd.ok) {
+          const xml = await rd.text();
+          const setMatch = xml.match(/<AdaptationSet[^>]*mimeType="text\/vtt"[^>]*>([\s\S]*?)<\/AdaptationSet>/);
+          if (setMatch) {
+            const setXml = setMatch[1];
+            const langMatch = setMatch[0].match(/lang="([^"]*)"/);
+            const trackLang = langMatch ? langMatch[1] : "en";
+            const baseMatch = setXml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
+            if (baseMatch) {
+              const baseUrl = baseMatch[1].replace(/&amp;/g, "&");
+              const segMatches = [...setXml.matchAll(/<SegmentURL media="sq\/(\d+)"\/>/g)];
+              dashVttInfo = { baseUrl, totalSegs: segMatches.length, trackLang, apiKey };
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    return { apiKey, tracks, dashUrl, dashVttInfo };
+  }
+
+  /**
+   * ENGINE 2: Innertube ANDROID Player API (Direct port of jdepoix/youtube-transcript-api v1.2.5)
+   */
+  async function extractViaInnertubeAndroid(videoId, targetLang = "en") {
+    const { apiKey, tracks, dashUrl } = await getPagePlayerAndDashInfo(videoId);
 
     if (!tracks || tracks.length === 0) {
       // ENGINE 3: Live Stream DVR WebVTT Extractor from dashManifestUrl
-      const dashUrl = playerData?.streamingData?.dashManifestUrl;
       if (dashUrl) {
         const dvrSnippets = await extractLiveDvrDash(videoId, apiKey, dashUrl, targetLang);
         if (dvrSnippets && dvrSnippets.length > 0) {
@@ -196,7 +232,13 @@ if (!window.__ytsContentScriptLoaded) {
           })
         });
         if (!pResp.ok) return null;
-        const pData = await pResp.json();
+        const pText = await pResp.text();
+        let pData;
+        try {
+          pData = JSON.parse(pText);
+        } catch (e) {
+          return null;
+        }
         dUrl = pData?.streamingData?.dashManifestUrl;
       }
       if (!dUrl) return null;
@@ -229,23 +271,22 @@ if (!window.__ytsContentScriptLoaded) {
       const bUrl = (info && info.baseUrl) ? info.baseUrl : initialInfo.baseUrl;
       const endIdx = Math.min(startIdx + batchSize, totalSegs);
 
-      // Fetch batch in parallel sub-chunks of 18
-      const indices = [];
-      for (let i = startIdx; i < endIdx; i++) indices.push(i);
-
-      for (let c = 0; c < indices.length; c += 18) {
-        const sub = indices.slice(c, c + 18);
-        await Promise.all(
-          sub.map(async segIdx => {
-            try {
-              const r = await fetch(`${bUrl}sq/${segIdx}`);
-              if (r.ok) {
-                const txt = await r.text();
-                if (txt && txt.trim()) rawSegments[segIdx] = txt;
-              }
-            } catch (e) {}
-          })
+      // Delegate segment fetching to background service worker to bypass youtube.com -> googlevideo.com CORS
+      const batchResult = await new Promise(resolve => {
+        chrome.runtime.sendMessage(
+          { action: "FETCH_DVR_BATCH", baseUrl: bUrl, startIdx, endIdx },
+          res => {
+            if (chrome.runtime.lastError || !res) {
+              resolve({ ok: false, segments: {} });
+            } else {
+              resolve(res);
+            }
+          }
         );
+      });
+
+      if (batchResult && batchResult.segments) {
+        Object.assign(rawSegments, batchResult.segments);
       }
     }
 
@@ -823,6 +864,28 @@ if (!window.__ytsContentScriptLoaded) {
         title: document.title.replace(" - YouTube", ""),
         ccUnavailable: ccUnavailable
       });
+      return true;
+    }
+
+    if (request.action === "FETCH_DOM_TRANSCRIPT") {
+      const targetLang = request.languageCode || "en";
+      extractViaDomPanel(targetLang)
+        .then(snippets => {
+          if (snippets && snippets.length > 0) {
+            sendResponse({ success: true, snippets });
+          } else {
+            sendResponse({ success: false, noDom: true });
+          }
+        })
+        .catch(err => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
+    if (request.action === "GET_PLAYER_AND_DASH_INFO") {
+      const vid = request.videoId || getCurrentVideoId();
+      getPagePlayerAndDashInfo(vid)
+        .then(info => sendResponse({ success: true, ...info }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
       return true;
     }
 

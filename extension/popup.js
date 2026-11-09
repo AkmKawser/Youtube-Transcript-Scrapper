@@ -261,23 +261,46 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Direct Innertube ANDROID Extractor inside Popup (works even without active YouTube tab)
-  async function extractDirectFromPopup(videoId, targetLang) {
-    const watchResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-    const html = await watchResp.text();
-
-    // Update video title if available
-    const titleMatch = html.match(/<title>(.*?)<\/title>/);
-    if (titleMatch && titleMatch[1]) {
-      currentVideoTitle = titleMatch[1].replace(" - YouTube", "").trim();
-      videoTitleEl.textContent = currentVideoTitle;
+  // Helper to get Innertube ANDROID player + DASH info via content script (native youtube.com Origin) or direct fetch
+  async function fetchPlayerAndDashInfo(videoId, existingApiKey = null) {
+    // 1. Try via active YouTube tab content.js (guarantees native Origin: https://www.youtube.com)
+    if (activeTab && activeTab.id && activeTab.url && activeTab.url.includes("youtube.com")) {
+      const tabInfo = await new Promise(resolve => {
+        chrome.tabs.sendMessage(
+          activeTab.id,
+          { action: "GET_PLAYER_AND_DASH_INFO", videoId },
+          res => {
+            if (chrome.runtime.lastError || !res || !res.success) {
+              resolve(null);
+            } else {
+              resolve(res);
+            }
+          }
+        );
+      });
+      if (tabInfo) {
+        return tabInfo;
+      }
     }
 
-    const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"/);
-    if (!apiKeyMatch) {
-      throw new Error("Could not extract YouTube Innertube API key.");
+    // 2. Fallback: Direct fetch from popup (uses declarativeNetRequest rule for Origin: https://www.youtube.com)
+    let apiKey = existingApiKey;
+    if (!apiKey) {
+      const watchResp = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+      const html = await watchResp.text();
+
+      const titleMatch = html.match(/<title>(.*?)<\/title>/);
+      if (titleMatch && titleMatch[1]) {
+        currentVideoTitle = titleMatch[1].replace(" - YouTube", "").trim();
+        videoTitleEl.textContent = currentVideoTitle;
+      }
+
+      const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"/);
+      if (!apiKeyMatch) {
+        throw new Error("Could not extract YouTube Innertube API key.");
+      }
+      apiKey = apiKeyMatch[1];
     }
-    const apiKey = apiKeyMatch[1];
 
     const playerResp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
       method: "POST",
@@ -293,14 +316,54 @@ document.addEventListener("DOMContentLoaded", () => {
       })
     });
 
-    const playerData = await playerResp.json();
-    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!playerResp.ok) {
+      throw new Error(`YouTube Innertube request returned HTTP ${playerResp.status}.`);
+    }
+
+    const playerText = await playerResp.text();
+    let playerData;
+    try {
+      playerData = JSON.parse(playerText);
+    } catch (e) {
+      throw new Error("YouTube returned an invalid JSON response. Please reload the YouTube tab and try again.");
+    }
+
+    const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    const dashUrl = playerData?.streamingData?.dashManifestUrl || null;
+    let dashVttInfo = null;
+
+    if ((!tracks || tracks.length === 0) && dashUrl) {
+      try {
+        const rd = await fetch(dashUrl);
+        if (rd.ok) {
+          const xml = await rd.text();
+          const setMatch = xml.match(/<AdaptationSet[^>]*mimeType="text\/vtt"[^>]*>([\s\S]*?)<\/AdaptationSet>/);
+          if (setMatch) {
+            const setXml = setMatch[1];
+            const langMatch = setMatch[0].match(/lang="([^"]*)"/);
+            const trackLang = langMatch ? langMatch[1] : "en";
+            const baseMatch = setXml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
+            if (baseMatch) {
+              const baseUrl = baseMatch[1].replace(/&amp;/g, "&");
+              const segMatches = [...setXml.matchAll(/<SegmentURL media="sq\/(\d+)"\/>/g)];
+              dashVttInfo = { baseUrl, totalSegs: segMatches.length, trackLang, apiKey };
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    return { apiKey, tracks, dashUrl, dashVttInfo };
+  }
+
+  // Direct Innertube ANDROID + Live DVR Extractor inside Popup
+  async function extractDirectFromPopup(videoId, targetLang) {
+    const { apiKey, tracks, dashUrl, dashVttInfo } = await fetchPlayerAndDashInfo(videoId);
 
     if (!tracks || tracks.length === 0) {
-      const dashUrl = playerData?.streamingData?.dashManifestUrl;
-      if (dashUrl) {
+      if (dashUrl || dashVttInfo) {
         setLoading(true, "Completed Live Stream detected! Extracting DVR WebVTT captions...");
-        const dvrSnippets = await extractLiveDvrDashInPopup(videoId, apiKey, dashUrl, targetLang);
+        const dvrSnippets = await extractLiveDvrDashInPopup(videoId, apiKey, dashUrl, targetLang, dashVttInfo);
         if (dvrSnippets && dvrSnippets.length > 0) {
           return dvrSnippets;
         }
@@ -364,39 +427,36 @@ document.addEventListener("DOMContentLoaded", () => {
     return snippets;
   }
 
-  async function extractLiveDvrDashInPopup(videoId, apiKey, initialDashUrl, targetLang = "en") {
+  async function extractLiveDvrDashInPopup(videoId, apiKey, initialDashUrl, targetLang = "en", preloadedDashInfo = null) {
     async function getDashVttInfo(existingDashUrl = null) {
-      let dUrl = existingDashUrl;
-      if (!dUrl) {
-        const pResp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            context: { client: { clientName: "ANDROID", "clientVersion": "20.10.38" } },
-            videoId: videoId
-          })
-        });
-        if (!pResp.ok) return null;
-        const pData = await pResp.json();
-        dUrl = pData?.streamingData?.dashManifestUrl;
+      try {
+        const refreshed = await fetchPlayerAndDashInfo(videoId, apiKey);
+        if (refreshed && refreshed.dashVttInfo && refreshed.dashVttInfo.baseUrl) {
+          return refreshed.dashVttInfo;
+        }
+        const dUrl = existingDashUrl || (refreshed && refreshed.dashUrl);
+        if (!dUrl) return null;
+        const rd = await fetch(dUrl);
+        if (!rd.ok) return null;
+        const xml = await rd.text();
+        const setMatch = xml.match(/<AdaptationSet[^>]*mimeType="text\/vtt"[^>]*>([\s\S]*?)<\/AdaptationSet>/);
+        if (!setMatch) return null;
+        const setXml = setMatch[1];
+        const langMatch = setMatch[0].match(/lang="([^"]*)"/);
+        const trackLang = langMatch ? langMatch[1] : "en";
+        const baseMatch = setXml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
+        if (!baseMatch) return null;
+        const baseUrl = baseMatch[1].replace(/&amp;/g, "&");
+        const segMatches = [...setXml.matchAll(/<SegmentURL media="sq\/(\d+)"\/>/g)];
+        return { baseUrl, totalSegs: segMatches.length, trackLang };
+      } catch (e) {
+        return null;
       }
-      if (!dUrl) return null;
-      const rd = await fetch(dUrl);
-      if (!rd.ok) return null;
-      const xml = await rd.text();
-      const setMatch = xml.match(/<AdaptationSet[^>]*mimeType="text\/vtt"[^>]*>([\s\S]*?)<\/AdaptationSet>/);
-      if (!setMatch) return null;
-      const setXml = setMatch[1];
-      const langMatch = setMatch[0].match(/lang="([^"]*)"/);
-      const trackLang = langMatch ? langMatch[1] : "en";
-      const baseMatch = setXml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
-      if (!baseMatch) return null;
-      const baseUrl = baseMatch[1].replace(/&amp;/g, "&");
-      const segMatches = [...setXml.matchAll(/<SegmentURL media="sq\/(\d+)"\/>/g)];
-      return { baseUrl, totalSegs: segMatches.length, trackLang };
     }
 
-    const initialInfo = await getDashVttInfo(initialDashUrl);
+    const initialInfo = (preloadedDashInfo && preloadedDashInfo.baseUrl)
+      ? preloadedDashInfo
+      : await getDashVttInfo(initialDashUrl);
     if (!initialInfo || !initialInfo.baseUrl || initialInfo.totalSegs === 0) {
       return [];
     }
@@ -419,13 +479,18 @@ document.addEventListener("DOMContentLoaded", () => {
         const sub = indices.slice(c, c + 18);
         await Promise.all(
           sub.map(async segIdx => {
-            try {
-              const r = await fetch(`${bUrl}sq/${segIdx}`);
-              if (r.ok) {
-                const txt = await r.text();
-                if (txt && txt.trim()) rawSegments[segIdx] = txt;
-              }
-            } catch (e) {}
+            for (let attempt = 0; attempt < 2; attempt++) {
+              try {
+                const r = await fetch(`${bUrl}sq/${segIdx}`);
+                if (r.ok) {
+                  const txt = await r.text();
+                  if (txt && txt.trim()) {
+                    rawSegments[segIdx] = txt;
+                    break;
+                  }
+                }
+              } catch (e) {}
+            }
           })
         );
       }
@@ -536,10 +601,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const selectedLang = langSelect.value || "en";
     const tabVideoId = activeTab && activeTab.url ? extractVideoId(activeTab.url) : "";
 
-    // If user is on the matching YouTube tab, use content.js (DOM Panel + Innertube)
+    // Step 1: If user is on the matching YouTube tab, try Engine 1 (DOM Transcript Panel) first
     if (activeTab && activeTab.id && tabVideoId === currentVideoId) {
       try {
-        // Ensure content.js is injected first
         if (chrome.scripting) {
           await chrome.scripting
             .executeScript({
@@ -549,36 +613,31 @@ document.addEventListener("DOMContentLoaded", () => {
             .catch(() => {});
         }
 
-        const response = await new Promise(resolve => {
+        const domResp = await new Promise(resolve => {
           chrome.tabs.sendMessage(
             activeTab.id,
-            { action: "FETCH_PAGE_TRANSCRIPT", languageCode: selectedLang },
+            { action: "FETCH_DOM_TRANSCRIPT", languageCode: selectedLang },
             res => {
               if (chrome.runtime.lastError) {
-                resolve({ success: false, error: chrome.runtime.lastError.message });
+                resolve({ success: false });
               } else {
-                resolve(res || { success: false, error: "No response from page." });
+                resolve(res || { success: false });
               }
             }
           );
         });
 
-        if (response && response.success && response.snippets && response.snippets.length > 0) {
-          currentSnippets = response.snippets;
+        if (domResp && domResp.success && domResp.snippets && domResp.snippets.length > 0) {
+          currentSnippets = domResp.snippets;
           renderTranscript(currentSnippets);
           return;
         }
-
-        if (response && response.error && response.error.toLowerCase().includes("unavailable")) {
-          showErrorState(response.error);
-          return;
-        }
       } catch (e) {
-        console.warn("Tab message error:", e);
+        console.warn("DOM panel check warning:", e);
       }
     }
 
-    // Fallback: Direct Innertube ANDROID extraction inside Popup
+    // Step 2: Engine 2 (Innertube ANDROID) + Engine 3 (Live Stream DVR WebVTT) inside Popup
     try {
       const snippets = await extractDirectFromPopup(currentVideoId, selectedLang);
       if (snippets && snippets.length > 0) {
@@ -586,8 +645,8 @@ document.addEventListener("DOMContentLoaded", () => {
         renderTranscript(currentSnippets);
         return;
       }
+      throw new Error(`No transcript segments found for video (${currentVideoId}).`);
     } catch (directErr) {
-      // Only try Python API if backend is actually online and error isn't "subtitles unavailable"
       if (isBackendOnline && !directErr.message.toLowerCase().includes("unavailable")) {
         await fetchViaPythonMode();
         return;
@@ -608,7 +667,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       const resp = await fetch(url);
-      const data = await resp.json();
+      const rawText = await resp.text();
+      let data;
+      try {
+        data = JSON.parse(rawText);
+      } catch (parseErr) {
+        throw new Error(
+          "Python API returned an unexpected response. Restart backend/run_server.bat or use '⚡ In-Browser Direct' mode."
+        );
+      }
       if (!resp.ok || !data.success) {
         throw new Error(data.error || "Failed to fetch transcript from Python API");
       }
