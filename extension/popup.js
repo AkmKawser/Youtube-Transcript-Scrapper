@@ -727,9 +727,10 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
       } else {
-        // Python server is offline - explain clearly to user
+        // Python server is offline - provide one-click button to start backend
         showErrorState(
-          `No captions provided by YouTube for this video. To convert audio to text using Whisper AI, please start the Python backend (double-click backend/run_server.bat).`
+          `No captions provided by YouTube for this video. To convert audio to text using Whisper AI, start the Python backend server:`,
+          true
         );
         return;
       }
@@ -776,19 +777,50 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       showErrorState(
         err.message.includes("Failed to fetch")
-          ? "Python API Server is offline. Switch to '⚡ In-Browser Direct' mode or start backend/run_server.bat."
-          : err.message
+          ? "Python API Server is offline. Switch to '⚡ In-Browser Direct' mode or click below to start it:"
+          : err.message,
+        err.message.includes("Failed to fetch")
       );
     }
   }
 
-  function showErrorState(errorMsg) {
+  function showErrorState(errorMsg, showStartBackendBtn = false) {
     emptyState.style.display = "flex";
     transcriptList.style.display = "none";
+    let btnHtml = "";
+    if (showStartBackendBtn) {
+      btnHtml = `
+        <div style="margin-top:14px;">
+          <a href="yt-transcript://start" id="btn-launch-backend" class="btn-primary" style="display:inline-block; text-decoration:none; padding:8px 16px; font-weight:600; font-size:12px; border-radius:6px; cursor:pointer;">
+            🚀 Start Python AI Server
+          </a>
+        </div>
+      `;
+    }
     emptyState.innerHTML = `
       <div style="color:#ff4d4d; font-weight:600; margin-bottom:6px;">⚠️ Transcript Unavailable</div>
       <p style="font-size:12px; line-height:1.45; color:#ddd;">${escapeHtml(errorMsg)}</p>
+      ${btnHtml}
     `;
+
+    const launchBtn = document.getElementById("btn-launch-backend");
+    if (launchBtn) {
+      launchBtn.addEventListener("click", () => {
+        setLoading(true, "Launching Python AI Server... Checking connection...");
+        let checks = 0;
+        const interval = setInterval(async () => {
+          checks++;
+          const online = await checkBackendHealth();
+          if (online) {
+            clearInterval(interval);
+            fetchTranscript();
+          } else if (checks > 15) {
+            clearInterval(interval);
+            showErrorState("Could not connect to Python API. Check if server started.", true);
+          }
+        }, 1500);
+      });
+    }
   }
 
   function setLoading(loading, text = "Loading...") {
