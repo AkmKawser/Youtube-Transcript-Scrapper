@@ -85,3 +85,4 @@ jobs:
           } else {
             console.log('Already up to date with version ' + latestVersion);
           }
+

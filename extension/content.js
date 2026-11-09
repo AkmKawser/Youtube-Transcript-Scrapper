@@ -127,8 +127,12 @@ function injectInPageDrawer() {
         <button id="yts-drawer-close" title="Close">✕</button>
       </div>
     </div>
-    <div class="yts-drawer-search">
-      <input type="text" id="yts-drawer-search-input" placeholder="Search transcript..." />
+    <div class="yts-drawer-search" style="display:flex; gap:8px;">
+      <select id="yts-drawer-lang-select" style="background:#222; border:1px solid #333; color:#fff; padding:6px; border-radius:8px; font-size:12px; outline:none;">
+        <option value="en">English (en)</option>
+        <option value="bn">Bangla (বাংলা)</option>
+      </select>
+      <input type="text" id="yts-drawer-search-input" placeholder="Search transcript..." style="flex:1;" />
     </div>
     <div class="yts-drawer-body" id="yts-drawer-body">
       <div class="yts-loading">Loading transcript...</div>
@@ -279,14 +283,23 @@ function injectInPageDrawer() {
     style.remove();
   });
 
-  loadDrawerTranscript();
+  // Language switch handler
+  const langSelect = document.getElementById("yts-drawer-lang-select");
+  if (langSelect) {
+    langSelect.addEventListener("change", (e) => {
+      loadDrawerTranscript(e.target.value);
+    });
+  }
+
+  loadDrawerTranscript("en");
 }
 
 let activeDrawerSnippets = [];
 
-async function loadDrawerTranscript() {
+async function loadDrawerTranscript(targetLang = "en") {
   const body = document.getElementById("yts-drawer-body");
   if (!body) return;
+  body.innerHTML = '<div class="yts-loading">Loading transcript...</div>';
 
   const tracks = getCaptionTracksFromPage();
   if (!tracks || tracks.length === 0) {
@@ -295,9 +308,18 @@ async function loadDrawerTranscript() {
   }
 
   try {
-    // Pick first track (prefer English or first available)
-    const track = tracks.find(t => t.languageCode === "en") || tracks[0];
-    const snippets = await fetchTranscriptFromTrack(track.baseUrl);
+    let track = tracks.find(t => t.languageCode.startsWith(targetLang));
+    let fetchUrl = "";
+    if (track) {
+      fetchUrl = track.baseUrl;
+    } else {
+      // Pick English or first track and translate via YouTube's &tlang parameter
+      const baseTrack = tracks.find(t => t.languageCode.startsWith("en")) || tracks[0];
+      fetchUrl = `${baseTrack.baseUrl}&tlang=${targetLang}`;
+      track = baseTrack;
+    }
+
+    const snippets = await fetchTranscriptFromTrack(fetchUrl);
     activeDrawerSnippets = snippets;
 
     if (!snippets || snippets.length === 0) {
