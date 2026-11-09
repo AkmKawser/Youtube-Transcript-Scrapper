@@ -30,6 +30,7 @@ from youtube_transcript_api.formatters import (
     JSONFormatter
 )
 import updater
+import live_dvr
 
 
 def extract_video_id(url_or_id: str) -> str:
@@ -66,33 +67,41 @@ def format_markdown(snippets, video_id: str) -> str:
 
 
 def fetch_transcript_for_video(video_id: str, languages=("en",), translate_to=None):
-    """Fetch transcript using youtube-transcript-api."""
+    """Fetch transcript using youtube-transcript-api with automatic Live DVR WebVTT fallback."""
     ytt = YouTubeTranscriptApi()
 
-    if translate_to:
-        transcript_list = ytt.list(video_id)
-        try:
-            base_tr = transcript_list.find_transcript(languages)
-        except Exception:
-            base_tr = next(iter(transcript_list))
-        fetched = base_tr.translate(translate_to).fetch()
-    else:
-        try:
-            fetched = ytt.fetch(video_id, languages=languages)
-        except NoTranscriptFound:
+    try:
+        if translate_to:
             transcript_list = ytt.list(video_id)
-            first_tr = next(iter(transcript_list))
-            fetched = first_tr.fetch()
+            try:
+                base_tr = transcript_list.find_transcript(languages)
+            except Exception:
+                base_tr = next(iter(transcript_list))
+            fetched = base_tr.translate(translate_to).fetch()
+        else:
+            try:
+                fetched = ytt.fetch(video_id, languages=languages)
+            except NoTranscriptFound:
+                transcript_list = ytt.list(video_id)
+                first_tr = next(iter(transcript_list))
+                fetched = first_tr.fetch()
 
-    snippets = []
-    for s in fetched:
-        snippets.append({
-            "text": s.text if hasattr(s, "text") else s.get("text", ""),
-            "start": float(s.start if hasattr(s, "start") else s.get("start", 0)),
-            "duration": float(s.duration if hasattr(s, "duration") else s.get("duration", 0))
-        })
+        snippets = []
+        for s in fetched:
+            snippets.append({
+                "text": s.text if hasattr(s, "text") else s.get("text", ""),
+                "start": float(s.start if hasattr(s, "start") else s.get("start", 0)),
+                "duration": float(s.duration if hasattr(s, "duration") else s.get("duration", 0))
+            })
 
-    return fetched, snippets
+        return fetched, snippets
+    except TranscriptsDisabled:
+        target_lang = translate_to or (languages[0] if languages else "en")
+        dvr_snippets = live_dvr.extract_live_dvr_transcript(video_id, target_lang=target_lang)
+        if dvr_snippets:
+            fetched_objs = [live_dvr.SimpleSnippet(s["text"], s["start"], s["duration"]) for s in dvr_snippets]
+            return fetched_objs, dvr_snippets
+        raise
 
 
 def main():

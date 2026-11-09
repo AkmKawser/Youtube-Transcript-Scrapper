@@ -11,6 +11,9 @@
   ],
   "host_permissions": [
     "*://*.youtube.com/*",
+    "*://*.googlevideo.com/*",
+    "https://clients5.google.com/*",
+    "https://translate.googleapis.com/*",
     "http://127.0.0.1:5000/*",
     "http://localhost:5000/*"
   ],

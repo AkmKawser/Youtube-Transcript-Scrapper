@@ -15,6 +15,7 @@ cookies.txt
 
 # Exports / Transcripts
 transcripts/
+transcript_*.*
 dist/
 *.tmp
 

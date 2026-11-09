@@ -96,11 +96,6 @@ if (!window.__ytsContentScriptLoaded) {
 
     const segEls = document.querySelectorAll("ytd-transcript-segment-renderer");
     if (segEls.length === 0) {
-      if (ccLabel.includes("unavailable")) {
-        throw new Error(
-          "Subtitles/closed captions are unavailable on YouTube for this video. (If this was a live stream, YouTube has not generated captions for it yet.)"
-        );
-      }
       return null;
     }
 
@@ -159,12 +154,13 @@ if (!window.__ytsContentScriptLoaded) {
     const tracks = playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
     if (!tracks || tracks.length === 0) {
-      const reason = playerData?.playabilityStatus?.reason || "";
-      const isLive = playerData?.videoDetails?.isLiveContent;
-      if (isLive || reason.toLowerCase().includes("live")) {
-        throw new Error(
-          `Subtitles/closed captions are unavailable on YouTube for this video (${videoId}). This is a Live Stream recording without generated captions.`
-        );
+      // ENGINE 3: Live Stream DVR WebVTT Extractor from dashManifestUrl
+      const dashUrl = playerData?.streamingData?.dashManifestUrl;
+      if (dashUrl) {
+        const dvrSnippets = await extractLiveDvrDash(videoId, apiKey, dashUrl, targetLang);
+        if (dvrSnippets && dvrSnippets.length > 0) {
+          return dvrSnippets;
+        }
       }
       throw new Error(`Subtitles/closed captions are disabled or unavailable on YouTube for this video (${videoId}).`);
     }
@@ -181,6 +177,177 @@ if (!window.__ytsContentScriptLoaded) {
     }
 
     return await fetchAndParseTimedTextXml(fetchUrl);
+  }
+
+  /**
+   * ENGINE 3: Extract Live Stream DVR WebVTT Captions from DASH Manifest
+   * Works immediately when a live stream finishes streaming (isPostLiveDvr=true)
+   */
+  async function extractLiveDvrDash(videoId, apiKey, initialDashUrl, targetLang = "en") {
+    async function getDashVttInfo(existingDashUrl = null) {
+      let dUrl = existingDashUrl;
+      if (!dUrl) {
+        const pResp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${apiKey}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            context: { client: { clientName: "ANDROID", clientVersion: "20.10.38" } },
+            videoId: videoId
+          })
+        });
+        if (!pResp.ok) return null;
+        const pData = await pResp.json();
+        dUrl = pData?.streamingData?.dashManifestUrl;
+      }
+      if (!dUrl) return null;
+      const rd = await fetch(dUrl);
+      if (!rd.ok) return null;
+      const xml = await rd.text();
+      const setMatch = xml.match(/<AdaptationSet[^>]*mimeType="text\/vtt"[^>]*>([\s\S]*?)<\/AdaptationSet>/);
+      if (!setMatch) return null;
+      const setXml = setMatch[1];
+      const langMatch = setMatch[0].match(/lang="([^"]*)"/);
+      const trackLang = langMatch ? langMatch[1] : "en";
+      const baseMatch = setXml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
+      if (!baseMatch) return null;
+      const baseUrl = baseMatch[1].replace(/&amp;/g, "&");
+      const segMatches = [...setXml.matchAll(/<SegmentURL media="sq\/(\d+)"\/>/g)];
+      return { baseUrl, totalSegs: segMatches.length, trackLang };
+    }
+
+    const initialInfo = await getDashVttInfo(initialDashUrl);
+    if (!initialInfo || !initialInfo.baseUrl || initialInfo.totalSegs === 0) {
+      return [];
+    }
+
+    const totalSegs = initialInfo.totalSegs;
+    const rawSegments = {};
+    const batchSize = 85;
+
+    for (let startIdx = 0; startIdx < totalSegs; startIdx += batchSize) {
+      const info = startIdx === 0 ? initialInfo : await getDashVttInfo(null);
+      const bUrl = (info && info.baseUrl) ? info.baseUrl : initialInfo.baseUrl;
+      const endIdx = Math.min(startIdx + batchSize, totalSegs);
+
+      // Fetch batch in parallel sub-chunks of 18
+      const indices = [];
+      for (let i = startIdx; i < endIdx; i++) indices.push(i);
+
+      for (let c = 0; c < indices.length; c += 18) {
+        const sub = indices.slice(c, c + 18);
+        await Promise.all(
+          sub.map(async segIdx => {
+            try {
+              const r = await fetch(`${bUrl}sq/${segIdx}`);
+              if (r.ok) {
+                const txt = await r.text();
+                if (txt && txt.trim()) rawSegments[segIdx] = txt;
+              }
+            } catch (e) {}
+          })
+        );
+      }
+    }
+
+    const sortedKeys = Object.keys(rawSegments).map(Number).sort((a, b) => a - b);
+    const snippets = [];
+
+    for (const segIdx of sortedKeys) {
+      const vtt = rawSegments[segIdx];
+      const mpegMatch = vtt.match(/MPEGTS:(\d+)/);
+      const segOffset = mpegMatch ? parseInt(mpegMatch[1], 10) / 90000.0 : segIdx * 5.0;
+
+      const blocks = vtt.split(/\r?\n\r?\n/);
+      for (const block of blocks) {
+        const tm = block.match(/(\d+):(\d+):(\d+\.\d+)\s*-->\s*(\d+):(\d+):(\d+\.\d+)/);
+        if (!tm) continue;
+        const cStart = parseInt(tm[1], 10) * 3600 + parseInt(tm[2], 10) * 60 + parseFloat(tm[3]);
+        const cEnd = parseInt(tm[4], 10) * 3600 + parseInt(tm[5], 10) * 60 + parseFloat(tm[6]);
+        const lines = block.split(/\r?\n/);
+        const tsIdx = lines.findIndex(l => l.includes("-->"));
+        if (tsIdx < 0) continue;
+
+        for (const tl of lines.slice(tsIdx + 1)) {
+          const noTags = tl.replace(/<[^>]+>/g, "");
+          const doc = new DOMParser().parseFromString(noTags, "text/html");
+          const cleanLine = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+          if (!cleanLine) continue;
+
+          const recent = snippets.slice(-6);
+          let isDup = false;
+          for (let rIdx = recent.length - 1; rIdx >= 0; rIdx--) {
+            const prev = recent[rIdx];
+            if (cleanLine === prev.text || prev.text.endsWith(cleanLine)) {
+              isDup = true;
+              break;
+            }
+            if (cleanLine.startsWith(prev.text) && segOffset + cStart - prev.start < 8.0) {
+              prev.text = cleanLine;
+              prev.duration = +Math.max(1.5, segOffset + cEnd - prev.start).toFixed(2);
+              isDup = true;
+              break;
+            }
+          }
+
+          if (!isDup) {
+            snippets.push({
+              text: cleanLine,
+              start: +(segOffset + cStart).toFixed(2),
+              duration: +Math.max(1.5, cEnd - cStart).toFixed(2)
+            });
+          }
+        }
+      }
+    }
+
+    // Merge short consecutive lines from same speaker
+    const merged = [];
+    for (const item of snippets) {
+      const prev = merged[merged.length - 1];
+      if (
+        prev &&
+        !item.text.startsWith(">>") &&
+        item.start - prev.start < 4.0 &&
+        prev.text.length < 80
+      ) {
+        prev.text = `${prev.text} ${item.text}`.trim();
+        prev.duration = +Math.max(prev.duration, item.start + item.duration - prev.start).toFixed(2);
+      } else {
+        merged.push(item);
+      }
+    }
+
+    // Translate to targetLang (e.g. Bangla 'bn') if different from trackLang
+    if (targetLang && !initialInfo.trackLang.startsWith(targetLang) && merged.length > 0) {
+      for (let i = 0; i < merged.length; i += 60) {
+        const chunk = merged.slice(i, i + 60);
+        try {
+          const bodyParams = new URLSearchParams();
+          chunk.forEach(c => bodyParams.append("q", c.text));
+          const trUrl = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(targetLang)}`;
+          const trResp = await fetch(trUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+            body: bodyParams.toString()
+          });
+          if (trResp.ok) {
+            const trData = await trResp.json();
+            if (Array.isArray(trData)) {
+              trData.forEach((item, idx) => {
+                if (idx >= chunk.length) return;
+                if (Array.isArray(item) && typeof item[0] === "string" && item[0].trim()) {
+                  chunk[idx].text = item[0].trim();
+                } else if (typeof item === "string" && item.trim()) {
+                  chunk[idx].text = item.trim();
+                }
+              });
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    return merged;
   }
 
   // Parse XML timedtext (supports both standard <text start="" dur=""> and srv3 <p t="" d="">)

@@ -33,6 +33,7 @@ from youtube_transcript_api.formatters import (
 )
 
 import updater
+import live_dvr
 
 app = Flask(__name__)
 # Enable CORS for all routes so Chrome Extension can communicate seamlessly
@@ -232,6 +233,29 @@ def get_transcript():
             })
 
     except TranscriptsDisabled:
+        # Fallback for recently completed Live Streams (isPostLiveDvr) using DASH WebVTT segments
+        target_lang = translate_target or (languages[0] if languages else "en")
+        dvr_snippets = live_dvr.extract_live_dvr_transcript(video_id, target_lang=target_lang)
+        if dvr_snippets:
+            fetched_objs = [live_dvr.SimpleSnippet(s["text"], s["start"], s["duration"]) for s in dvr_snippets]
+            if out_format == "txt":
+                return TextFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
+            elif out_format == "srt":
+                return SRTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
+            elif out_format == "vtt":
+                return WebVTTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/vtt; charset=utf-8"}
+            elif out_format == "markdown":
+                return format_markdown(dvr_snippets), 200, {"Content-Type": "text/markdown; charset=utf-8"}
+            else:
+                return jsonify({
+                    "success": True,
+                    "video_id": video_id,
+                    "source": "live_dvr_webvtt",
+                    "count": len(dvr_snippets),
+                    "snippets": dvr_snippets,
+                    "plain_text": TextFormatter().format_transcript(fetched_objs),
+                    "markdown": format_markdown(dvr_snippets)
+                })
         return jsonify({"error": "Transcripts are disabled for this video", "code": "TRANSCRIPTS_DISABLED"}), 404
     except NoTranscriptFound:
         return jsonify({"error": "No matching transcript found for requested languages", "code": "NO_TRANSCRIPT_FOUND"}), 404

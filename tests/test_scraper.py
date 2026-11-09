@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from cli import extract_video_id, format_markdown
 from backend.app import app
+from backend.live_dvr import SimpleSnippet, translate_snippets_gtx
 import updater
 
 
@@ -91,6 +92,16 @@ class TestUpdaterModule(unittest.TestCase):
         ver = updater.get_current_version()
         self.assertNotEqual(ver, "Not Installed")
         self.assertTrue(len(ver) > 0)
+
+
+class TestLiveDvrModule(unittest.TestCase):
+    """Test Live Stream DVR helper objects."""
+
+    def test_simple_snippet(self):
+        snip = SimpleSnippet("Hello Live DVR", 12.5, 3.0)
+        self.assertEqual(snip.text, "Hello Live DVR")
+        self.assertEqual(snip["start"], 12.5)
+        self.assertEqual(snip.get("duration"), 3.0)
 
 
 if __name__ == "__main__":
