@@ -12,7 +12,7 @@ import traceback
 # Ensure backend directory is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
 import youtube_transcript_api
@@ -120,6 +120,42 @@ def transcribe_audio_endpoint():
         return jsonify(res)
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@app.route("/api/audio", methods=["GET"])
+@app.route("/api/download_audio", methods=["GET"])
+def download_audio_endpoint():
+    """
+    Serves the extracted audio.mp3 for a video so the user can download and use it.
+    """
+    video_id_param = request.args.get("video_id") or request.args.get("url")
+    video_id = extract_video_id(video_id_param)
+    if not video_id:
+        return jsonify({"error": "Missing 'video_id' parameter"}), 400
+
+    mp3_path = audio_transcriber.get_cached_mp3_path(video_id)
+    if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) == 0:
+        # Generate MP3 on demand if not already converted
+        raw_audio = audio_transcriber.download_audio_from_youtube(video_id)
+        if not raw_audio:
+            return jsonify({"error": "Could not extract audio for this video"}), 404
+        try:
+            audio_transcriber.convert_to_mp3(raw_audio, mp3_path)
+        finally:
+            try:
+                if os.path.exists(raw_audio):
+                    os.remove(raw_audio)
+            except Exception:
+                pass
+
+    if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
+        return send_file(
+            mp3_path,
+            mimetype="audio/mpeg",
+            as_attachment=True,
+            download_name=f"youtube_{video_id}.mp3"
+        )
+    return jsonify({"error": "Failed to create MP3 file"}), 500
 
 
 @app.route("/api/languages", methods=["GET", "POST"])

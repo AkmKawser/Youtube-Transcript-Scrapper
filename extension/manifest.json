@@ -8,7 +8,8 @@
     "storage",
     "scripting",
     "contextMenus",
-    "declarativeNetRequest"
+    "declarativeNetRequest",
+    "downloads"
   ],
   "host_permissions": [
     "*://*.youtube.com/*",

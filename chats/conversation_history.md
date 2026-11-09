@@ -69,4 +69,12 @@ This directory archives key conversations, user architectural requests, and chan
   * Permanently deleted `docs/images/preview.png` and removed all preview image tags from `README.md`.
   * Sanitized all edge labels in the Mermaid diagram (`-- "English (en)" -->` and `-- "Bangla (bn)" -->`) to resolve syntax errors in GitHub's native parser.
 
+### 10. Direct Audio (.mp3) Download Feature
+* **User Directive:** "when you generate the audio file. let the user download it. so that he can use the audio.mp3"
+* **Implementation:**
+  * Added `convert_to_mp3()` using `PyAV` in `backend/audio_transcriber.py` to produce a high-fidelity MP3 file.
+  * Added `/api/audio?video_id={id}` and `/api/download_audio` endpoints in `backend/app.py` to stream the generated MP3 as an attachment.
+  * Added a dedicated **"🎵 Audio (.mp3)"** option in the extension's **⬇ Export** dropdown menu with Chrome `downloads` permission, allowing one-click download of the extracted audio.
+
+
 

@@ -1044,6 +1044,35 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  const btnDownloadMp3 = document.getElementById("action-download-mp3");
+  if (btnDownloadMp3) {
+    btnDownloadMp3.addEventListener("click", e => {
+      e.preventDefault();
+      if (!currentVideoId) {
+        alert("No video selected. Please load or scrape a video first.");
+        return;
+      }
+      if (!isBackendOnline) {
+        showErrorState(
+          "Python API server is required to download MP3 audio. Click below to start the server:",
+          true
+        );
+        return;
+      }
+      const audioUrl = `${backendUrl}/api/audio?video_id=${currentVideoId}`;
+      chrome.downloads.download({
+        url: audioUrl,
+        filename: `${sanitizeFilename(currentVideoTitle || currentVideoId)}.mp3`,
+        saveAs: true
+      }, downloadId => {
+        if (chrome.runtime.lastError || !downloadId) {
+          // Fallback to window download
+          window.open(audioUrl, "_blank");
+        }
+      });
+    });
+  }
+
   function generateMarkdown() {
     let out = `# ${currentVideoTitle}\n\n`;
     out += `**Video URL:** https://www.youtube.com/watch?v=${currentVideoId}\n\n`;

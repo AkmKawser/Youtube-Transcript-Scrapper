@@ -140,9 +140,39 @@ def download_audio_from_youtube(video_id: str, max_duration_sec: int = 7200) -> 
     return None
 
 
+def convert_to_mp3(input_path: str, output_path: str) -> bool:
+    """Converts downloaded audio stream into a standard MP3 file using PyAV."""
+    try:
+        with av.open(input_path, mode="r") as in_c, av.open(output_path, mode="w", format="mp3") as out_c:
+            in_stream = in_c.streams.audio[0]
+            rate = in_stream.rate or 44100
+            layout = "mono" if (in_stream.layout and in_stream.layout.name in ("mono", "1")) else "stereo"
+            out_stream = out_c.add_stream("mp3", rate=rate)
+            out_stream.layout = layout
+            out_stream.format = "s16p"
+            resampler = av.AudioResampler(format="s16p", layout=layout, rate=rate)
+            for frame in in_c.decode(in_stream):
+                for r_frame in resampler.resample(frame):
+                    for packet in out_stream.encode(r_frame):
+                        out_c.mux(packet)
+            for packet in out_stream.encode(None):
+                out_c.mux(packet)
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+    except Exception as e:
+        print(f"[AudioTranscriber] MP3 transcode error: {e}")
+        return False
+
+
+def get_cached_mp3_path(video_id: str) -> str:
+    """Returns the persistent path where the generated audio.mp3 is stored."""
+    temp_dir = tempfile.gettempdir()
+    return os.path.join(temp_dir, f"youtube_audio_{video_id}.mp3")
+
+
 def transcribe_youtube_audio(video_id: str, target_lang: str = "en") -> Dict[str, Any]:
     """
-    Extracts video audio and converts to timestamped transcript using faster-whisper.
+    Extracts video audio, saves audio.mp3 for user download, and converts to timestamped
+    transcript using faster-whisper.
     Applies user language constraints:
       - Final transcript output is strictly 'en' or 'bn'.
       - If source is Hindi ('hi') -> automatically translated to English (or Bangla if requested).
@@ -152,6 +182,13 @@ def transcribe_youtube_audio(video_id: str, target_lang: str = "en") -> Dict[str
     audio_path = download_audio_from_youtube(video_id)
     if not audio_path:
         raise RuntimeError(f"Could not download audio stream for video {video_id}.")
+
+    # Generate MP3 file for user download
+    mp3_path = get_cached_mp3_path(video_id)
+    try:
+        convert_to_mp3(audio_path, mp3_path)
+    except Exception as e:
+        print(f"[AudioTranscriber] MP3 save warning: {e}")
 
     try:
         model = get_whisper_model("base")
@@ -201,12 +238,15 @@ def transcribe_youtube_audio(video_id: str, target_lang: str = "en") -> Dict[str
                 "duration": item["duration"]
             })
 
+        has_mp3 = os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0
         return {
             "success": True,
             "video_id": video_id,
             "source": "audio_speech_to_text",
             "detected_language": detected_lang,
             "target_language": target,
+            "has_audio_mp3": has_mp3,
+            "audio_download_url": f"/api/audio?video_id={video_id}" if has_mp3 else None,
             "count": len(final_snippets),
             "snippets": final_snippets
         }
