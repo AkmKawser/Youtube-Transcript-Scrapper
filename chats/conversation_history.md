@@ -49,3 +49,24 @@ This directory archives key conversations, user architectural requests, and chan
 * **User Directive:** "stop running virtual env in the background from next time"
 * **Rule Established:** The assistant will not spawn background daemons or background Python servers automatically. The user runs `backend/run_server.bat` or `.venv\Scripts\python.exe backend\app.py` on demand when needed.
 
+### 7. One-Click Python Server Launch via Windows Protocol Handler
+* **User Directive:** "is there a way to put that button on the extension so it does what is mention run_server.bat? option-1"
+* **Implementation:**
+  * Created `register_protocol.bat` which registers the `yt-transcript://` protocol in the Windows Registry (`HKCU\Software\Classes\yt-transcript`).
+  * Updated extension error states: when a video has no YouTube captions and the Python backend is offline, a prominent **`🚀 Start Python AI Server`** button appears in the popup.
+  * Clicking it triggers `yt-transcript://start` to launch `backend/run_server.bat` directly from the extension, auto-polls for connection, and automatically resumes transcription once online.
+
+### 8. Full State Persistence & Anti-Dismissal Workflow
+* **User Directive:** "আমি যদি extension থেকে mouse সরিয়ে দেই তারপরও extension তার কাজ করতে থাকবে। mouse সরিয়ে অন্য কোথাও CLICK করলে এখন যেটা হচ্ছে তা হোল extension তার কাজ বন্ধ করে দিচ্ছে।"
+* **Implementation:**
+  * Enabled automatic caching in `chrome.storage.local` (`lastVideoId`, `lastVideoTitle`, `lastSnippets`, `lastLang`).
+  * Reopening the extension instantly restores the previously scraped transcript lines and active state without re-fetching or losing data.
+  * Combined with the dedicated **Pop-out Window Button (↗️)**, users can keep the extension open in a persistent floating window that never dismisses when interacting with other browser tabs or windows.
+
+### 9. Documentation & Diagram Fixes
+* **User Directive:** "remove this piece of crap image. it was a bug. remove this image." / "fix Mermaid parse error"
+* **Implementation:**
+  * Permanently deleted `docs/images/preview.png` and removed all preview image tags from `README.md`.
+  * Sanitized all edge labels in the Mermaid diagram (`-- "English (en)" -->` and `-- "Bangla (bn)" -->`) to resolve syntax errors in GitHub's native parser.
+
+
