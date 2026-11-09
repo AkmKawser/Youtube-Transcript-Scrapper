@@ -5,28 +5,79 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-brightgreen?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A modern Chrome Extension (Manifest V3) and Python API for extracting, searching, and exporting YouTube transcripts in **TXT**, **SRT**, **WebVTT**, **JSON**, and **Markdown**.
+A high-performance Chrome Extension (Manifest V3) and Python backend for extracting, translating, searching, and exporting YouTube transcripts in **TXT**, **SRT**, **WebVTT**, **JSON**, and **Markdown**.
 
-Powered by the popular [**`jdepoix/youtube-transcript-api`**](https://github.com/jdepoix/youtube-transcript-api) engine with **seamless upstream synchronization** so updates to the core repository are immediately reflected in your extension.
+Engineered with a **smart dual-path architecture**: instantly copies native YouTube transcripts when available, and automatically falls back to an **offline AI Speech-to-Text engine (`faster-whisper`)** for videos that have no captions (such as completed live streams and newly released uploads).
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+    A["YouTube Video (URL or Tab)"] --> B{"Does YouTube provide auto/manual transcript?"}
+    
+    %% Path 1: Direct Transcript Extraction
+    B -- Yes --> C["Instant Direct Transcript Extractor"]
+    C --> C1["Modern DOM Panel (PAmodern_transcript_view)"]
+    C --> C2["Legacy DOM Panel (ytd-transcript-segment-renderer)"]
+    C --> C3["Innertube ANDROID API / youtube-transcript-api"]
+    C1 --> E["Language Validation & Conversion"]
+    C2 --> E
+    C3 --> E
+
+    %% Path 2: Audio Extraction & Whisper ASR Fallback
+    B -- No / Live Streams / Recent Videos --> D["Audio-to-Text Pipeline (Whisper ASR)"]
+    D --> D1["Extract Audio Stream via yt-dlp"]
+    D1 --> D2["In-Memory Audio Decode (PyAV)"]
+    D2 --> D3["Local Speech-to-Text via faster-whisper"]
+    D3 --> E
+
+    %% Strict Language Transformation
+    E --> F{"Select Target Output"}
+    F -->|English (en)| G["English Output: Preserves English, auto-translates Hindi/other sources into English"]
+    F -->|Bangla (bn)| H["Bangla Output: Preserves native Bangla, auto-translates English/Hindi into Bangla"]
+
+    %% Export
+    G --> I["Export: Plain Text (.txt) | Subtitles (.srt, .vtt) | JSON | Markdown (.md)"]
+    H --> I
+```
+
+### 🎯 Key Architectural Pillars
+
+1. **Direct Native Caption Ingestion (0ms Latency):**
+   - Automatically detects and copies native or auto-generated YouTube captions.
+   - Fully compatible with YouTube's **2026 Modern Transcript Panel** (`PAmodern_transcript_view` with `<transcript-segment-view-model>`) and legacy panels.
+2. **Audio-to-Text AI Fallback (`faster-whisper` + `yt-dlp`):**
+   - When a video has **no captions** (e.g. newly streamed live videos or newly uploaded videos):
+     - Downloads the audio stream directly with `yt-dlp`.
+     - Automatically decodes audio in memory using `PyAV`.
+     - Generates timestamped subtitle segments locally using `faster-whisper` (CPU int8, zero external API keys needed).
+3. **Strict Two-Language Output Pipeline (`English` & `Bangla`):**
+   - Output transcripts are strictly constrained to **English (`en`)** or **Bangla (`bn`)**.
+   - **Hindi Source:** Automatically detected and converted into English (or Bangla if requested).
+   - **Bangla Source:** Kept natively in Bangla without unwanted translation (or translated into English if requested).
+   - **English Source:** Kept in English (or translated into Bangla if requested).
+4. **Upstream Synchronization:**
+   - Seamlessly synchronizes with upstream improvements from [`jdepoix/youtube-transcript-api`](https://github.com/jdepoix/youtube-transcript-api).
 
 ---
 
 ## 🌟 Key Features
 
-* **⚡ Dual-Engine Extraction:**
-  * **Engine 1: In-Browser Direct (Zero-Setup):** Scrapes captions directly from your active YouTube tab using your existing browser session. *Never gets blocked by IP bans or cloud 429 limits, and works with logged-in cookies.*
-  * **Engine 2: Python API (`youtube-transcript-api`):** Communicates with a local REST backend powered by the latest `youtube-transcript-api` library. Supports automatic translation, formatters, and upstream updates.
-* **🔄 Upstream Repo Synchronization:** When `jdepoix/youtube-transcript-api` releases updates or fixes on GitHub/PyPI, you can update your backend directly with **one click** from the Chrome extension popup or via `updater.py`.
-* **⏱️ Clickable Timestamps:** Clicking any timestamp in the transcript automatically jumps the YouTube video player to that exact second.
-* **🔍 Real-Time Search & Highlight:** Instantly search through transcript lines with keyword highlighting and match counters.
+* **⚡ Dual-Mode Integration:**
+  * **⚡ In-Browser Direct (Zero-Setup):** Scrapes captions directly from your active YouTube tab using your existing browser session. *Immune to IP bans or HTTP 429 rate-limiting.*
+  * **🐍 Python API Mode (`backend/app.py`):** Communicates with local REST backend providing formatters, Whisper ASR audio transcription, and upstream updates.
+* **🎙️ Speech-to-Text for Caption-Less Videos:** Converts speech to text on demand for videos without captions.
+* **⏱️ Interactive Clickable Timestamps:** Clicking any timestamp in the transcript automatically seeks the YouTube player to that exact moment.
+* **🔍 Real-Time Search & Highlight:** Instantly search through transcript lines with keyword highlighting and match counts.
 * **📥 Multi-Format Export:**
-  * **Plain Text (`.txt`)** – continuous text for notes or LLM summarization.
-  * **SubRip (`.srt`)** – standard timecoded subtitles.
+  * **Plain Text (`.txt`)** – Continuous text for reading, notes, or LLM prompting.
+  * **SubRip (`.srt`)** – Standard timecoded subtitle file for video players.
   * **WebVTT (`.vtt`)** – HTML5 video subtitles.
-  * **JSON (`.json`)** – structured data with `start`, `duration`, and `text`.
-  * **Markdown (`.md`)** – formatted timestamped headers.
+  * **JSON (`.json`)** – Structured array with `start`, `duration`, and `text`.
+  * **Markdown (`.md`)** – Clean timestamped document with headers.
 * **📋 One-Click Copy:** Copy plain text, timestamped transcripts, or Markdown directly to your clipboard.
-* **🎯 In-Page Action Button:** Adds a discreet **"Transcript"** button directly on the YouTube video page (next to Like / Share) to open a slide-out transcript drawer.
 
 ---
 
@@ -34,21 +85,26 @@ Powered by the popular [**`jdepoix/youtube-transcript-api`**](https://github.com
 
 ```
 Youtube-Transcript-Scrapper/
-├── backend/                      # Python backend API (youtube-transcript-api wrapper)
-│   ├── app.py                    # Flask REST API with CORS & formatters
+├── backend/                      # Python backend API & AI speech engine
+│   ├── app.py                    # Flask REST API with CORS, formatters & fallback
+│   ├── audio_transcriber.py      # Audio extraction (yt-dlp) + Whisper ASR (faster-whisper)
 │   ├── updater.py                # PyPI/GitHub upstream version checker & updater
 │   ├── run_server.bat            # One-click Windows runner
 │   └── requirements.txt          # Backend dependencies
 ├── extension/                    # Chrome Extension (Manifest V3)
-│   ├── manifest.json             # Extension manifest
+│   ├── manifest.json             # Manifest V3 specification
 │   ├── popup.html                # Modern popup UI (Dark Theme)
 │   ├── popup.css                 # Responsive YouTube-style styling
 │   ├── popup.js                  # Controller for Dual-Engine + update manager
 │   ├── content.js                # In-page extractor, video seek & injected drawer
-│   ├── background.js             # Service worker & context menu handler
+│   ├── background.js             # Service worker & origin header modifiers
 │   └── icons/                    # Extension icons (16, 48, 128)
+├── tests/                        # Comprehensive unit tests
+│   └── test_scraper.py           # Test suite (URL parser, formatting, ASR translation)
+├── cli.py                        # Standalone CLI tool for terminal power-users
+├── package_extension.py          # Extension packager script
 ├── requirements.txt              # Project dependencies
-├── .gitignore                    # Git ignore file
+├── LICENSE                       # MIT License
 └── README.md                     # Documentation
 ```
 
@@ -65,64 +121,65 @@ Youtube-Transcript-Scrapper/
    ```
    c:\Users\USER\Documents\.MYGITHUB\Youtube-Transcript-Scrapper\extension
    ```
-5. The extension icon will appear in your Chrome toolbar. Pin it for easy access!
+5. Pin the extension to your Chrome toolbar.
 
 ---
 
-### Step 2: Start the Python Backend (Optional for Python API Mode)
+### Step 2: Start the Python Backend (Required for Whisper ASR & Python Mode)
 
-The extension works out of the box in **⚡ In-Browser Direct** mode. If you also want to use the **🐍 Python API** engine (for translation, batch processing, and exact `youtube-transcript-api` formatters):
+To enable offline Speech-to-Text (`faster-whisper`) for live streams and videos without captions:
 
 1. Double-click `backend/run_server.bat` (on Windows), **OR** run in terminal:
    ```bash
    # Activate virtual environment
    .venv\Scripts\activate
 
+   # Install dependencies
+   pip install -r backend/requirements.txt
+
    # Run backend API
    python backend/app.py
    ```
 2. The server starts on `http://127.0.0.1:5000`.
-3. The extension will automatically detect the server and show a green **`API v1.2.5`** status pill!
+3. The extension automatically detects the server and illuminates a green status pill.
 
 ---
 
-## 🔄 How Upstream Repository Updates Work
+## 💻 CLI Usage
 
-When [jdepoix/youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api) updates on GitHub or releases a new version on PyPI, you don't need to rewrite or re-install the extension:
+You can also scrape and transcribe videos directly from the command line:
 
-### Method A: One-Click from Extension UI
-1. Click the extension icon.
-2. Click the ⚙️ **Settings** icon in the header.
-3. Click **"Check for Updates"**. The modal will compare your installed version against the latest PyPI release.
-4. Click **"Update Library"**. The backend will upgrade `youtube-transcript-api` via pip and immediately apply the changes without restarting your browser!
-
-### Method B: From the Terminal
-Run the included updater script anytime:
 ```bash
-python backend/updater.py
-```
-Or upgrade directly from GitHub's master branch:
-```bash
-pip install --upgrade git+https://github.com/jdepoix/youtube-transcript-api.git
+# 1. Scrape standard YouTube video transcript to TXT
+python cli.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --format txt
+
+# 2. Extract subtitles as SRT file translated into Bangla
+python cli.py dQw4w9WgXcQ --translate bn --format srt -o subtitles_bn.srt
+
+# 3. Transcribe a live stream or video without captions using Whisper ASR
+python cli.py https://www.youtube.com/watch?v=5J2eSSgLD40 --translate en --format md -o transcript.md
+
+# 4. Check for upstream library updates
+python cli.py --check-update
 ```
 
 ---
 
-## 🛠️ API Reference (Backend)
+## 🛠️ REST API Reference
 
-The Python backend exposes clean REST endpoints:
+The backend exposes clean REST endpoints:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/health` | `GET` | Health check, installed version, and update status |
-| `/api/languages?video_id={id}` | `GET` | Lists all manual, auto-generated, and translation target languages |
-| `/api/transcript?video_id={id}&format={txt\|srt\|vtt\|json\|md}` | `GET` | Extracts and formats transcript |
-| `/api/update` | `POST` | Triggers an upgrade of `youtube-transcript-api` |
+| `/health` | `GET` | Health check, installed version, and Whisper ASR status |
+| `/api/languages?video_id={id}` | `GET` | Lists available native and translated caption languages |
+| `/api/transcript?video_id={id}&format={txt\|srt\|vtt\|json\|md}` | `GET` | Fetches transcript (auto-falls back to Whisper ASR if no captions exist) |
+| `/api/transcribe_audio?video_id={id}&target_lang={en\|bn}` | `GET/POST` | Dedicated Whisper speech-to-text audio pipeline |
+| `/api/update` | `POST` | Upgrades core `youtube-transcript-api` package on the fly |
 
 ---
 
-## 💡 Troubleshooting & Tips
+## 📄 License
 
-* **Age-Restricted Videos:** Use the **In-Browser Direct** mode while logged into your YouTube account in Chrome. It reads your authenticated session directly.
-* **Rate Limits (`429 Too Many Requests`):** If your Python backend or IP gets rate-limited by YouTube, switch to the **In-Browser Direct** mode tab in the extension—it uses standard video player traffic and is never blocked.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
