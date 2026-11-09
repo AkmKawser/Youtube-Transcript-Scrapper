@@ -123,9 +123,9 @@ Examples:
     parser.add_argument("--batch", "-b", help="File containing YouTube URLs/IDs (one per line)")
     parser.add_argument("--format", "-f", choices=["txt", "srt", "vtt", "json", "md"], default="txt",
                         help="Export format (default: txt)")
-    parser.add_argument("--languages", "-l", default="en",
-                        help="Comma-separated preferred languages (default: en)")
-    parser.add_argument("--translate", "-t", help="Translate transcript into target language code (e.g., es, de, fr)")
+    parser.add_argument("--languages", "-l", default="en,bn",
+                        help="Comma-separated preferred languages (default: en,bn)")
+    parser.add_argument("--translate", "-t", choices=["en", "bn"], help="Translate transcript into target language ('en' or 'bn')")
     parser.add_argument("--output", "-o", help="Output file path (for single video)")
     parser.add_argument("--output-dir", "-d", default="./transcripts", help="Output directory for batch downloads")
     parser.add_argument("--list-languages", action="store_true", help="List available languages for the video and exit")

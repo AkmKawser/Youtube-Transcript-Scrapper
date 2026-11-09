@@ -172,34 +172,46 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function populateLanguageDropdown() {
     langSelect.innerHTML = "";
+    
+    // We strictly support only 2 languages: English and Bangla
+    const allowed = [
+      { code: "en", name: "English" },
+      { code: "bn", name: "Bangla (বাংলা)" }
+    ];
+
     if (currentMode === "browser" && availableTracks.length > 0) {
-      availableTracks.forEach(t => {
-        const opt = document.createElement("option");
-        opt.value = t.languageCode;
-        opt.textContent = `${t.name?.runs?.[0]?.text || t.languageCode} (${t.languageCode})${t.kind === "asr" ? " [Auto]" : ""}`;
-        langSelect.appendChild(opt);
-      });
-    } else {
-      // Default common languages for Python API mode
-      const defaults = [
-        { code: "en", name: "English" },
-        { code: "es", name: "Spanish" },
-        { code: "fr", name: "French" },
-        { code: "de", name: "German" },
-        { code: "pt", name: "Portuguese" },
-        { code: "ja", name: "Japanese" },
-        { code: "zh", name: "Chinese" },
-        { code: "hi", name: "Hindi" },
-        { code: "ar", name: "Arabic" },
-        { code: "ru", name: "Russian" }
-      ];
-      defaults.forEach(d => {
-        const opt = document.createElement("option");
-        opt.value = d.code;
-        opt.textContent = `${d.name} (${d.code})`;
-        langSelect.appendChild(opt);
-      });
+      const matchedTracks = availableTracks.filter(t => 
+        t.languageCode.startsWith("en") || t.languageCode.startsWith("bn")
+      );
+
+      if (matchedTracks.length > 0) {
+        matchedTracks.forEach(t => {
+          const opt = document.createElement("option");
+          opt.value = t.languageCode;
+          const label = t.languageCode.startsWith("bn") ? "Bangla (বাংলা)" : "English";
+          opt.textContent = `${label} (${t.languageCode})${t.kind === "asr" ? " [Auto]" : ""}`;
+          langSelect.appendChild(opt);
+        });
+
+        // Also ensure Bangla is selectable even if original track is English (auto-translate)
+        const hasBangla = matchedTracks.some(t => t.languageCode.startsWith("bn"));
+        if (!hasBangla) {
+          const opt = document.createElement("option");
+          opt.value = "bn";
+          opt.textContent = "Bangla (বাংলা) [Translate]";
+          langSelect.appendChild(opt);
+        }
+        return;
+      }
     }
+
+    // Default 2 languages
+    allowed.forEach(d => {
+      const opt = document.createElement("option");
+      opt.value = d.code;
+      opt.textContent = `${d.name} (${d.code})`;
+      langSelect.appendChild(opt);
+    });
   }
 
   // Toggle manual URL input

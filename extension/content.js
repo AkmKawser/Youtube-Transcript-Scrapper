@@ -495,8 +495,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
     }
     const targetLang = request.languageCode || "en";
-    const track = tracks.find(t => t.languageCode === targetLang) || tracks[0];
-    fetchTranscriptFromTrack(track.baseUrl)
+    let track = tracks.find(t => t.languageCode.startsWith(targetLang));
+    let fetchUrl = "";
+    if (track) {
+      fetchUrl = track.baseUrl;
+    } else {
+      // Pick English or first track and translate to requested language (e.g. Bangla: &tlang=bn)
+      const baseTrack = tracks.find(t => t.languageCode.startsWith("en")) || tracks[0];
+      fetchUrl = `${baseTrack.baseUrl}&tlang=${targetLang}`;
+      track = baseTrack;
+    }
+    fetchTranscriptFromTrack(fetchUrl)
       .then(snippets => sendResponse({ success: true, snippets, track }))
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true; // Keep async response channel open
