@@ -48,3 +48,4 @@ This directory archives key conversations, user architectural requests, and chan
 ### 6. Environment Execution Rule
 * **User Directive:** "stop running virtual env in the background from next time"
 * **Rule Established:** The assistant will not spawn background daemons or background Python servers automatically. The user runs `backend/run_server.bat` or `.venv\Scripts\python.exe backend\app.py` on demand when needed.
+

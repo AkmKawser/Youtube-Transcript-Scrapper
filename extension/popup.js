@@ -706,9 +706,9 @@ document.addEventListener("DOMContentLoaded", () => {
       throw new Error(`No transcript segments found for video (${currentVideoId}).`);
     } catch (directErr) {
       // Step 3: If YouTube does not provide transcripts (e.g. live video or fresh video),
-      // and Python backend is online, invoke Whisper Audio-to-Text conversion
+      // check if Python backend is running for Whisper Audio-to-Text conversion
       if (isBackendOnline) {
-        setLoading(true, "Converting video audio to text (Whisper ASR)...");
+        setLoading(true, "No YouTube captions found. Converting video audio to text (Whisper ASR)... This may take 1-2 minutes.");
         try {
           const asrResp = await fetch(
             `${backendUrl}/api/transcribe_audio?video_id=${currentVideoId}&target_lang=${selectedLang}`
@@ -719,22 +719,21 @@ document.addEventListener("DOMContentLoaded", () => {
             renderTranscript(currentSnippets);
             return;
           }
+          if (asrData && asrData.error) {
+            throw new Error(`Whisper ASR: ${asrData.error}`);
+          }
         } catch (asrErr) {
-          console.warn("Audio-to-text fallback error:", asrErr);
+          showErrorState(asrErr.message);
+          return;
         }
-      }
-
-      const errLower = (directErr.message || "").toLowerCase();
-      if (
-        !isFallback &&
-        isBackendOnline &&
-        !errLower.includes("unavailable") &&
-        !errLower.includes("429") &&
-        !errLower.includes("rate-limited")
-      ) {
-        await fetchViaPythonMode(true);
+      } else {
+        // Python server is offline - explain clearly to user
+        showErrorState(
+          `No captions provided by YouTube for this video. To convert audio to text using Whisper AI, please start the Python backend (double-click backend/run_server.bat).`
+        );
         return;
       }
+
       showErrorState(directErr.message);
     }
   }
