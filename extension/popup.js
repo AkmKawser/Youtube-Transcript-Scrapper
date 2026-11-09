@@ -261,26 +261,106 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Helper to get Innertube ANDROID player + DASH info via content script (native youtube.com Origin) or direct fetch
-  async function fetchPlayerAndDashInfo(videoId, existingApiKey = null) {
-    // 1. Try via active YouTube tab content.js (guarantees native Origin: https://www.youtube.com)
-    if (activeTab && activeTab.id && activeTab.url && activeTab.url.includes("youtube.com")) {
-      const tabInfo = await new Promise(resolve => {
-        chrome.tabs.sendMessage(
-          activeTab.id,
-          { action: "GET_PLAYER_AND_DASH_INFO", videoId },
-          res => {
-            if (chrome.runtime.lastError || !res || !res.success) {
-              resolve(null);
-            } else {
-              resolve(res);
-            }
+  // Translate an array of snippets in popup using Google Translate Chrome Extension API
+  async function translateSnippetsInPopup(snippets, targetLang) {
+    if (!snippets || snippets.length === 0 || !targetLang) return snippets;
+    setLoading(true, `Translating transcript to ${targetLang.toUpperCase()}...`);
+    for (let i = 0; i < snippets.length; i += 60) {
+      const chunk = snippets.slice(i, i + 60);
+      try {
+        const bodyParams = new URLSearchParams();
+        chunk.forEach(c => bodyParams.append("q", c.text));
+        const trUrl = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(targetLang)}`;
+        const trResp = await fetch(trUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+          body: bodyParams.toString()
+        });
+        if (trResp.ok) {
+          const trData = await trResp.json();
+          if (Array.isArray(trData)) {
+            trData.forEach((item, idx) => {
+              if (idx >= chunk.length) return;
+              if (Array.isArray(item) && typeof item[0] === "string" && item[0].trim()) {
+                chunk[idx].text = item[0].trim();
+              } else if (typeof item === "string" && item.trim()) {
+                chunk[idx].text = item.trim();
+              }
+            });
           }
-        );
-      });
-      if (tabInfo) {
-        return tabInfo;
-      }
+        }
+      } catch (e) {}
+    }
+    return snippets;
+  }
+
+  // Helper to get Innertube ANDROID player + DASH info via executeScript (native youtube.com Origin) or direct fetch
+  async function fetchPlayerAndDashInfo(videoId, existingApiKey = null) {
+    // 1. Try via chrome.scripting.executeScript in active YouTube tab (works without refreshing tab & guarantees Origin: https://www.youtube.com)
+    if (
+      chrome.scripting &&
+      activeTab &&
+      activeTab.id &&
+      activeTab.url &&
+      activeTab.url.includes("youtube.com")
+    ) {
+      try {
+        const execResults = await chrome.scripting.executeScript({
+          target: { tabId: activeTab.id },
+          func: async (vid, passedKey) => {
+            try {
+              let key = passedKey;
+              if (!key) {
+                const wResp = await fetch(`https://www.youtube.com/watch?v=${vid}`, { credentials: "include" });
+                const wHtml = await wResp.text();
+                const m = wHtml.match(/"INNERTUBE_API_KEY":\s*"([a-zA-Z0-9_-]+)"/);
+                if (!m) return { success: false };
+                key = m[1];
+              }
+              const pResp = await fetch(`https://www.youtube.com/youtubei/v1/player?key=${key}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  context: { client: { clientName: "ANDROID", clientVersion: "20.10.38" } },
+                  videoId: vid
+                })
+              });
+              if (!pResp.ok) return { success: false };
+              const pData = await pResp.json();
+              const tracks = pData?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+              const dashUrl = pData?.streamingData?.dashManifestUrl || null;
+              let dashVttInfo = null;
+              if (dashUrl) {
+                try {
+                  const rd = await fetch(dashUrl);
+                  if (rd.ok) {
+                    const xml = await rd.text();
+                    const setMatch = xml.match(/<AdaptationSet[^>]*mimeType="text\/vtt"[^>]*>([\s\S]*?)<\/AdaptationSet>/);
+                    if (setMatch) {
+                      const setXml = setMatch[1];
+                      const langMatch = setMatch[0].match(/lang="([^"]*)"/);
+                      const trackLang = langMatch ? langMatch[1] : "en";
+                      const baseMatch = setXml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
+                      if (baseMatch) {
+                        const baseUrl = baseMatch[1].replace(/&amp;/g, "&");
+                        const segMatches = [...setXml.matchAll(/<SegmentURL media="sq\/(\d+)"\/>/g)];
+                        dashVttInfo = { baseUrl, totalSegs: segMatches.length, trackLang, apiKey: key };
+                      }
+                    }
+                  }
+                } catch (e) {}
+              }
+              return { success: true, apiKey: key, tracks, dashUrl, dashVttInfo };
+            } catch (err) {
+              return { success: false, error: err.message };
+            }
+          },
+          args: [videoId, existingApiKey]
+        });
+        if (execResults && execResults[0] && execResults[0].result && execResults[0].result.success) {
+          return execResults[0].result;
+        }
+      } catch (e) {}
     }
 
     // 2. Fallback: Direct fetch from popup (uses declarativeNetRequest rule for Origin: https://www.youtube.com)
@@ -332,7 +412,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const dashUrl = playerData?.streamingData?.dashManifestUrl || null;
     let dashVttInfo = null;
 
-    if ((!tracks || tracks.length === 0) && dashUrl) {
+    if (dashUrl) {
       try {
         const rd = await fetch(dashUrl);
         if (rd.ok) {
@@ -360,71 +440,82 @@ document.addEventListener("DOMContentLoaded", () => {
   async function extractDirectFromPopup(videoId, targetLang) {
     const { apiKey, tracks, dashUrl, dashVttInfo } = await fetchPlayerAndDashInfo(videoId);
 
-    if (!tracks || tracks.length === 0) {
-      if (dashUrl || dashVttInfo) {
-        setLoading(true, "Completed Live Stream detected! Extracting DVR WebVTT captions...");
-        const dvrSnippets = await extractLiveDvrDashInPopup(videoId, apiKey, dashUrl, targetLang, dashVttInfo);
-        if (dvrSnippets && dvrSnippets.length > 0) {
-          return dvrSnippets;
+    // Try standard captionTracks first if available
+    if (tracks && tracks.length > 0) {
+      try {
+        let track = tracks.find(t => t.languageCode.startsWith(targetLang));
+        let needsGtxTranslation = false;
+        if (!track) {
+          track = tracks.find(t => t.languageCode.startsWith("en")) || tracks[0];
+          needsGtxTranslation = true;
         }
+        const fetchUrl = track.baseUrl.replace("&fmt=srv3", "");
+        const xmlResp = await fetch(fetchUrl);
+
+        if (xmlResp.ok) {
+          const xmlText = await xmlResp.text();
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+          const snippets = [];
+
+          const textNodes = xmlDoc.getElementsByTagName("text");
+          if (textNodes && textNodes.length > 0) {
+            for (let i = 0; i < textNodes.length; i++) {
+              const node = textNodes[i];
+              const start = parseFloat(node.getAttribute("start") || "0");
+              const dur = parseFloat(node.getAttribute("dur") || "2.0");
+              const doc = new DOMParser().parseFromString(node.textContent || "", "text/html");
+              const clean = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+              if (clean) snippets.push({ text: clean, start, duration: dur });
+            }
+          } else {
+            const pNodes = xmlDoc.getElementsByTagName("p");
+            if (pNodes && pNodes.length > 0) {
+              for (let i = 0; i < pNodes.length; i++) {
+                const node = pNodes[i];
+                const startMs = parseFloat(node.getAttribute("t") || "0");
+                const durMs = parseFloat(node.getAttribute("d") || "2000");
+                const doc = new DOMParser().parseFromString(node.textContent || "", "text/html");
+                const clean = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+                if (clean) {
+                  snippets.push({
+                    text: clean,
+                    start: +(startMs / 1000.0).toFixed(2),
+                    duration: +(durMs / 1000.0).toFixed(2)
+                  });
+                }
+              }
+            }
+          }
+
+          if (snippets.length > 0) {
+            if (needsGtxTranslation) {
+              return await translateSnippetsInPopup(snippets, targetLang);
+            }
+            return snippets;
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Fallback or Primary for Live Stream DVR videos: extract WebVTT segments from dashManifestUrl
+    if (dashUrl || (dashVttInfo && dashVttInfo.totalSegs > 0)) {
+      setLoading(true, "Completed Live Stream detected! Extracting DVR WebVTT captions...");
+      const dvrSnippets = await extractLiveDvrDashInPopup(videoId, apiKey, dashUrl, targetLang, dashVttInfo);
+      if (dvrSnippets && dvrSnippets.length > 0) {
+        return dvrSnippets;
       }
+    }
+
+    if (tracks && tracks.length > 0) {
       throw new Error(
-        `Subtitles/closed captions are disabled or unavailable on YouTube for this video (${videoId}).`
+        "YouTube rate-limited /api/timedtext (HTTP 429). Please open the video directly in your active YouTube tab and click Scrape."
       );
     }
 
-    let track = tracks.find(t => t.languageCode.startsWith(targetLang));
-    let fetchUrl = "";
-    if (track) {
-      fetchUrl = track.baseUrl.replace("&fmt=srv3", "");
-    } else {
-      const baseTrack = tracks.find(t => t.languageCode.startsWith("en")) || tracks[0];
-      fetchUrl = baseTrack.baseUrl.replace("&fmt=srv3", "") + `&tlang=${targetLang}`;
-    }
-
-    const xmlResp = await fetch(fetchUrl);
-    if (xmlResp.status === 429) {
-      throw new Error(
-        "YouTube rate-limited direct timedtext requests. Open the video tab on YouTube and click Scrape to use the DOM Extractor."
-      );
-    }
-    const xmlText = await xmlResp.text();
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-    const snippets = [];
-
-    const textNodes = xmlDoc.getElementsByTagName("text");
-    if (textNodes && textNodes.length > 0) {
-      for (let i = 0; i < textNodes.length; i++) {
-        const node = textNodes[i];
-        const start = parseFloat(node.getAttribute("start") || "0");
-        const dur = parseFloat(node.getAttribute("dur") || "2.0");
-        const doc = new DOMParser().parseFromString(node.textContent || "", "text/html");
-        const clean = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
-        if (clean) snippets.push({ text: clean, start, duration: dur });
-      }
-      if (snippets.length > 0) return snippets;
-    }
-
-    const pNodes = xmlDoc.getElementsByTagName("p");
-    if (pNodes && pNodes.length > 0) {
-      for (let i = 0; i < pNodes.length; i++) {
-        const node = pNodes[i];
-        const startMs = parseFloat(node.getAttribute("t") || "0");
-        const durMs = parseFloat(node.getAttribute("d") || "2000");
-        const doc = new DOMParser().parseFromString(node.textContent || "", "text/html");
-        const clean = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
-        if (clean) {
-          snippets.push({
-            text: clean,
-            start: +(startMs / 1000.0).toFixed(2),
-            duration: +(durMs / 1000.0).toFixed(2)
-          });
-        }
-      }
-    }
-
-    return snippets;
+    throw new Error(
+      `Subtitles/closed captions are disabled or unavailable on YouTube for this video (${videoId}).`
+    );
   }
 
   async function extractLiveDvrDashInPopup(videoId, apiKey, initialDashUrl, targetLang = "en", preloadedDashInfo = null) {
@@ -601,34 +692,134 @@ document.addEventListener("DOMContentLoaded", () => {
     const selectedLang = langSelect.value || "en";
     const tabVideoId = activeTab && activeTab.url ? extractVideoId(activeTab.url) : "";
 
-    // Step 1: If user is on the matching YouTube tab, try Engine 1 (DOM Transcript Panel) first
-    if (activeTab && activeTab.id && tabVideoId === currentVideoId) {
+    // Step 1: If user is on the matching YouTube tab, run Engine 1 (DOM Transcript Panel) directly via executeScript
+    if (chrome.scripting && activeTab && activeTab.id && tabVideoId === currentVideoId) {
       try {
-        if (chrome.scripting) {
-          await chrome.scripting
-            .executeScript({
-              target: { tabId: activeTab.id },
-              files: ["content.js"]
-            })
-            .catch(() => {});
-        }
+        const execDom = await chrome.scripting.executeScript({
+          target: { tabId: activeTab.id },
+          func: async targetLang => {
+            function parseTs(tsStr) {
+              if (!tsStr) return 0;
+              const clean = tsStr.trim().replace(/[^\d:]/g, "");
+              const parts = clean.split(":").map(Number);
+              if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+              if (parts.length === 2) return parts[0] * 60 + parts[1];
+              return parts[0] || 0;
+            }
 
-        const domResp = await new Promise(resolve => {
-          chrome.tabs.sendMessage(
-            activeTab.id,
-            { action: "FETCH_DOM_TRANSCRIPT", languageCode: selectedLang },
-            res => {
-              if (chrome.runtime.lastError) {
-                resolve({ success: false });
-              } else {
-                resolve(res || { success: false });
+            // If segments are not rendered yet, check if transcript section exists in description
+            if (document.querySelectorAll("ytd-transcript-segment-renderer").length === 0) {
+              let btns = Array.from(
+                document.querySelectorAll(
+                  'ytd-video-description-transcript-section-renderer button, button[aria-label*="Show transcript" i]'
+                )
+              );
+
+              if (btns.length === 0) {
+                const trSection = document.querySelector("ytd-video-description-transcript-section-renderer");
+                const expandBtn = document.querySelector("#expand, tp-yt-paper-button#expand");
+                if (expandBtn) {
+                  expandBtn.click();
+                }
+                if (trSection || expandBtn) {
+                  for (let w = 0; w < 8; w++) {
+                    await new Promise(r => setTimeout(r, 200));
+                    btns = Array.from(
+                      document.querySelectorAll(
+                        'ytd-video-description-transcript-section-renderer button, button[aria-label*="Show transcript" i]'
+                      )
+                    );
+                    if (btns.length > 0) break;
+                  }
+                }
+              }
+
+              if (btns.length > 0) {
+                btns.forEach(b => {
+                  try {
+                    b.click();
+                  } catch (e) {}
+                });
+                for (let i = 0; i < 25; i++) {
+                  await new Promise(r => setTimeout(r, 200));
+                  if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
+                    break;
+                  }
+                }
               }
             }
-          );
+
+            const panel = document.querySelector(
+              'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
+            );
+
+            let matchedNativeLang = false;
+            if (panel) {
+              const menuItems = Array.from(
+                panel.querySelectorAll("tp-yt-paper-listbox a, tp-yt-paper-item")
+              );
+              if (menuItems.length > 0) {
+                const keywords = targetLang.startsWith("bn")
+                  ? ["bangla", "bengali", "বাংলা"]
+                  : ["english"];
+                const targetItem = menuItems.find(el => {
+                  const txt = (el.textContent || "").toLowerCase();
+                  return keywords.some(k => txt.includes(k));
+                });
+
+                if (targetItem) {
+                  matchedNativeLang = true;
+                  if (
+                    !targetItem.classList.contains("iron-selected") &&
+                    targetItem.getAttribute("aria-selected") !== "true"
+                  ) {
+                    targetItem.click();
+                    await new Promise(r => setTimeout(r, 800));
+                    for (let i = 0; i < 20; i++) {
+                      if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
+                        break;
+                      }
+                      await new Promise(r => setTimeout(r, 200));
+                    }
+                  }
+                }
+              }
+            }
+
+            const segEls = document.querySelectorAll("ytd-transcript-segment-renderer");
+            if (segEls.length === 0) {
+              return { success: false };
+            }
+
+            const snippets = [];
+            segEls.forEach(seg => {
+              const tsText = seg.querySelector(".segment-timestamp")?.textContent?.trim() || "0:00";
+              const text = seg.querySelector(".segment-text")?.textContent?.trim() || "";
+              if (text) {
+                snippets.push({
+                  text: text,
+                  start: parseTs(tsText),
+                  duration: 3.0
+                });
+              }
+            });
+
+            for (let i = 0; i < snippets.length - 1; i++) {
+              snippets[i].duration = Math.max(1.0, +(snippets[i + 1].start - snippets[i].start).toFixed(2));
+            }
+
+            return { success: snippets.length > 0, snippets, matchedNativeLang };
+          },
+          args: [selectedLang]
         });
 
+        const domResp = execDom && execDom[0] ? execDom[0].result : null;
         if (domResp && domResp.success && domResp.snippets && domResp.snippets.length > 0) {
-          currentSnippets = domResp.snippets;
+          let finalSnippets = domResp.snippets;
+          if (!domResp.matchedNativeLang) {
+            finalSnippets = await translateSnippetsInPopup(finalSnippets, selectedLang);
+          }
+          currentSnippets = finalSnippets;
           renderTranscript(currentSnippets);
           return;
         }

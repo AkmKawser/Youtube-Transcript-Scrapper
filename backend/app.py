@@ -232,7 +232,7 @@ def get_transcript():
                 "markdown": format_markdown(raw_snippets)
             })
 
-    except TranscriptsDisabled:
+    except (TranscriptsDisabled, NoTranscriptFound, IpBlocked, RequestBlocked) as fallback_err:
         # Fallback for recently completed Live Streams (isPostLiveDvr) using DASH WebVTT segments
         target_lang = translate_target or (languages[0] if languages else "en")
         dvr_snippets = live_dvr.extract_live_dvr_transcript(video_id, target_lang=target_lang)
@@ -256,18 +256,12 @@ def get_transcript():
                     "plain_text": TextFormatter().format_transcript(fetched_objs),
                     "markdown": format_markdown(dvr_snippets)
                 })
+        if isinstance(fallback_err, (IpBlocked, RequestBlocked)):
+            return jsonify({
+                "error": "YouTube blocked /api/timedtext from this IP. Open the video in Chrome and use '⚡ In-Browser Direct' mode.",
+                "code": "IP_BLOCKED"
+            }), 429
         return jsonify({"error": "Transcripts are disabled for this video", "code": "TRANSCRIPTS_DISABLED"}), 404
-    except NoTranscriptFound:
-        return jsonify({"error": "No matching transcript found for requested languages", "code": "NO_TRANSCRIPT_FOUND"}), 404
-    except VideoUnavailable:
-        return jsonify({"error": "Video is unavailable or private", "code": "VIDEO_UNAVAILABLE"}), 404
-    except AgeRestricted:
-        return jsonify({"error": "Video is age restricted (session cookies required)", "code": "AGE_RESTRICTED"}), 403
-    except (IpBlocked, RequestBlocked):
-        return jsonify({
-            "error": "YouTube blocked this request from this IP. Please switch to the Chrome Extension's In-Browser mode.",
-            "code": "IP_BLOCKED"
-        }), 429
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 

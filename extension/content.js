@@ -31,29 +31,74 @@ if (!window.__ytsContentScriptV3Loaded) {
    * ENGINE 1: Extract transcript directly from YouTube's built-in DOM Transcript Panel.
    * Works on all videos with transcripts, never gets 0-byte exp=xpe responses or 429 blocks.
    */
-  async function extractViaDomPanel(targetLang = "en") {
-    const ccBtn = document.querySelector(".ytp-subtitles-button");
-    const ccLabel = (ccBtn?.getAttribute("title") || ccBtn?.getAttribute("aria-label") || "").toLowerCase();
+  async function translateSnippetsInPage(snippets, targetLang) {
+    if (!snippets || snippets.length === 0 || !targetLang) return snippets;
+    for (let i = 0; i < snippets.length; i += 60) {
+      const chunk = snippets.slice(i, i + 60);
+      try {
+        const bodyParams = new URLSearchParams();
+        chunk.forEach(c => bodyParams.append("q", c.text));
+        const trUrl = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(targetLang)}`;
+        const trResp = await fetch(trUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+          body: bodyParams.toString()
+        });
+        if (trResp.ok) {
+          const trData = await trResp.json();
+          if (Array.isArray(trData)) {
+            trData.forEach((item, idx) => {
+              if (idx >= chunk.length) return;
+              if (Array.isArray(item) && typeof item[0] === "string" && item[0].trim()) {
+                chunk[idx].text = item[0].trim();
+              } else if (typeof item === "string" && item.trim()) {
+                chunk[idx].text = item.trim();
+              }
+            });
+          }
+        }
+      } catch (e) {}
+    }
+    return snippets;
+  }
 
+  async function extractViaDomPanel(targetLang = "en") {
     let panel = document.querySelector(
       'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
     );
 
-    // If segments are not rendered yet, click the "Show transcript" button in description
+    // If segments are not rendered yet, click all matching "Show transcript" buttons in description
     if (!panel || panel.querySelectorAll("ytd-transcript-segment-renderer").length === 0) {
-      let showBtn = document.querySelector("ytd-video-description-transcript-section-renderer button");
-      if (!showBtn) {
-        // Sometimes description needs expanding first
+      let btns = Array.from(
+        document.querySelectorAll(
+          'ytd-video-description-transcript-section-renderer button, button[aria-label*="Show transcript" i]'
+        )
+      );
+      if (btns.length === 0) {
+        const trSection = document.querySelector("ytd-video-description-transcript-section-renderer");
         const expandBtn = document.querySelector("#expand, tp-yt-paper-button#expand");
         if (expandBtn) {
           expandBtn.click();
-          await new Promise(r => setTimeout(r, 300));
-          showBtn = document.querySelector("ytd-video-description-transcript-section-renderer button");
+        }
+        if (trSection || expandBtn) {
+          for (let w = 0; w < 8; w++) {
+            await new Promise(r => setTimeout(r, 200));
+            btns = Array.from(
+              document.querySelectorAll(
+                'ytd-video-description-transcript-section-renderer button, button[aria-label*="Show transcript" i]'
+              )
+            );
+            if (btns.length > 0) break;
+          }
         }
       }
 
-      if (showBtn) {
-        showBtn.click();
+      if (btns.length > 0) {
+        btns.forEach(b => {
+          try {
+            b.click();
+          } catch (e) {}
+        });
         for (let i = 0; i < 25; i++) {
           await new Promise(r => setTimeout(r, 200));
           if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
@@ -67,6 +112,7 @@ if (!window.__ytsContentScriptV3Loaded) {
       'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
     );
 
+    let matchedNativeLang = false;
     if (panel) {
       // Switch language inside YouTube's transcript panel if requested (English vs Bangla)
       const menuItems = Array.from(
@@ -81,14 +127,17 @@ if (!window.__ytsContentScriptV3Loaded) {
           return keywords.some(k => txt.includes(k));
         });
 
-        if (targetItem && !targetItem.classList.contains("iron-selected") && targetItem.getAttribute("aria-selected") !== "true") {
-          targetItem.click();
-          await new Promise(r => setTimeout(r, 1000));
-          for (let i = 0; i < 20; i++) {
-            if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
-              break;
+        if (targetItem) {
+          matchedNativeLang = true;
+          if (!targetItem.classList.contains("iron-selected") && targetItem.getAttribute("aria-selected") !== "true") {
+            targetItem.click();
+            await new Promise(r => setTimeout(r, 800));
+            for (let i = 0; i < 20; i++) {
+              if (document.querySelectorAll("ytd-transcript-segment-renderer").length > 0) {
+                break;
+              }
+              await new Promise(r => setTimeout(r, 200));
             }
-            await new Promise(r => setTimeout(r, 200));
           }
         }
       }
@@ -116,7 +165,11 @@ if (!window.__ytsContentScriptV3Loaded) {
       snippets[i].duration = Math.max(1.0, +(snippets[i + 1].start - snippets[i].start).toFixed(2));
     }
 
-    return snippets.length > 0 ? snippets : null;
+    if (snippets.length === 0) return null;
+    if (!matchedNativeLang) {
+      return await translateSnippetsInPage(snippets, targetLang);
+    }
+    return snippets;
   }
 
   // Helper to get Innertube ANDROID player data + DASH VTT manifest info from page origin
@@ -160,7 +213,7 @@ if (!window.__ytsContentScriptV3Loaded) {
     const dashUrl = playerData?.streamingData?.dashManifestUrl || null;
     let dashVttInfo = null;
 
-    if ((!tracks || tracks.length === 0) && dashUrl) {
+    if (dashUrl) {
       try {
         const rd = await fetch(dashUrl);
         if (rd.ok) {
@@ -190,29 +243,34 @@ if (!window.__ytsContentScriptV3Loaded) {
   async function extractViaInnertubeAndroid(videoId, targetLang = "en") {
     const { apiKey, tracks, dashUrl } = await getPagePlayerAndDashInfo(videoId);
 
-    if (!tracks || tracks.length === 0) {
-      // ENGINE 3: Live Stream DVR WebVTT Extractor from dashManifestUrl
-      if (dashUrl) {
-        const dvrSnippets = await extractLiveDvrDash(videoId, apiKey, dashUrl, targetLang);
-        if (dvrSnippets && dvrSnippets.length > 0) {
-          return dvrSnippets;
+    if (tracks && tracks.length > 0) {
+      try {
+        let track = tracks.find(t => t.languageCode.startsWith(targetLang));
+        let needsTranslation = false;
+        if (!track) {
+          track = tracks.find(t => t.languageCode.startsWith("en")) || tracks[0];
+          needsTranslation = true;
         }
+        const fetchUrl = track.baseUrl.replace("&fmt=srv3", "");
+        const parsed = await fetchAndParseTimedTextXml(fetchUrl);
+        if (parsed && parsed.length > 0) {
+          if (needsTranslation) {
+            return await translateSnippetsInPage(parsed, targetLang);
+          }
+          return parsed;
+        }
+      } catch (e) {}
+    }
+
+    // ENGINE 3: Live Stream DVR WebVTT Extractor from dashManifestUrl
+    if (dashUrl) {
+      const dvrSnippets = await extractLiveDvrDash(videoId, apiKey, dashUrl, targetLang);
+      if (dvrSnippets && dvrSnippets.length > 0) {
+        return dvrSnippets;
       }
-      throw new Error(`Subtitles/closed captions are disabled or unavailable on YouTube for this video (${videoId}).`);
     }
 
-    // Find matching language track or fallback + translate
-    let track = tracks.find(t => t.languageCode.startsWith(targetLang));
-    let fetchUrl = "";
-    if (track) {
-      fetchUrl = track.baseUrl.replace("&fmt=srv3", "");
-    } else {
-      const baseTrack = tracks.find(t => t.languageCode.startsWith("en")) || tracks[0];
-      fetchUrl = baseTrack.baseUrl.replace("&fmt=srv3", "") + `&tlang=${targetLang}`;
-      track = baseTrack;
-    }
-
-    return await fetchAndParseTimedTextXml(fetchUrl);
+    throw new Error(`Subtitles/closed captions are disabled or unavailable on YouTube for this video (${videoId}).`);
   }
 
   /**
