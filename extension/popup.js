@@ -34,6 +34,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const downloadMenu = document.getElementById("download-menu");
 
   const btnSettings = document.getElementById("btn-settings");
+  const btnPopout = document.getElementById("btn-popout");
   const modalOverlay = document.getElementById("modal-overlay");
   const modalCloseBtn = document.getElementById("modal-close-btn");
   const settingBackendUrl = document.getElementById("setting-backend-url");
@@ -53,7 +54,23 @@ document.addEventListener("DOMContentLoaded", () => {
   let backendUrl = "http://127.0.0.1:5000";
   let isBackendOnline = false;
 
-  // Load saved preferences
+  // Popout into persistent standalone window
+  if (btnPopout) {
+    // Hide popout button if already running in a standalone window
+    if (window.location.search.includes("mode=window")) {
+      btnPopout.style.display = "none";
+    }
+
+    btnPopout.addEventListener("click", () => {
+      chrome.windows.create({
+        url: chrome.runtime.getURL("popup.html?mode=window"),
+        type: "popup",
+        width: 480,
+        height: 640
+      });
+      window.close();
+    });
+  }
   chrome.storage.local.get(["backendUrl", "preferredMode"], res => {
     if (res.backendUrl) {
       backendUrl = res.backendUrl;
@@ -498,15 +515,6 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch (e) {}
     }
 
-    // Fallback or Primary for Live Stream DVR videos: extract WebVTT segments from dashManifestUrl
-    if (dashUrl || (dashVttInfo && dashVttInfo.totalSegs > 0)) {
-      setLoading(true, "Completed Live Stream detected! Extracting DVR WebVTT captions...");
-      const dvrSnippets = await extractLiveDvrDashInPopup(videoId, apiKey, dashUrl, targetLang, dashVttInfo);
-      if (dvrSnippets && dvrSnippets.length > 0) {
-        return dvrSnippets;
-      }
-    }
-
     if (tracks && tracks.length > 0) {
       throw new Error(
         "YouTube rate-limited /api/timedtext (HTTP 429). Please open the video directly in your active YouTube tab and click Scrape."
@@ -516,175 +524,6 @@ document.addEventListener("DOMContentLoaded", () => {
     throw new Error(
       `Subtitles/closed captions are disabled or unavailable on YouTube for this video (${videoId}).`
     );
-  }
-
-  async function extractLiveDvrDashInPopup(videoId, apiKey, initialDashUrl, targetLang = "en", preloadedDashInfo = null) {
-    async function getDashVttInfo(existingDashUrl = null) {
-      try {
-        const refreshed = await fetchPlayerAndDashInfo(videoId, apiKey);
-        if (refreshed && refreshed.dashVttInfo && refreshed.dashVttInfo.baseUrl) {
-          return refreshed.dashVttInfo;
-        }
-        const dUrl = existingDashUrl || (refreshed && refreshed.dashUrl);
-        if (!dUrl) return null;
-        const rd = await fetch(dUrl);
-        if (!rd.ok) return null;
-        const xml = await rd.text();
-        const setMatch = xml.match(/<AdaptationSet[^>]*mimeType="text\/vtt"[^>]*>([\s\S]*?)<\/AdaptationSet>/);
-        if (!setMatch) return null;
-        const setXml = setMatch[1];
-        const langMatch = setMatch[0].match(/lang="([^"]*)"/);
-        const trackLang = langMatch ? langMatch[1] : "en";
-        const baseMatch = setXml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
-        if (!baseMatch) return null;
-        const baseUrl = baseMatch[1].replace(/&amp;/g, "&");
-        const segMatches = [...setXml.matchAll(/<SegmentURL media="sq\/(\d+)"\/>/g)];
-        return { baseUrl, totalSegs: segMatches.length, trackLang };
-      } catch (e) {
-        return null;
-      }
-    }
-
-    const initialInfo = (preloadedDashInfo && preloadedDashInfo.baseUrl)
-      ? preloadedDashInfo
-      : await getDashVttInfo(initialDashUrl);
-    if (!initialInfo || !initialInfo.baseUrl || initialInfo.totalSegs === 0) {
-      return [];
-    }
-
-    const totalSegs = initialInfo.totalSegs;
-    const rawSegments = {};
-    const batchSize = 85;
-
-    for (let startIdx = 0; startIdx < totalSegs; startIdx += batchSize) {
-      const pct = Math.min(99, Math.round((startIdx / totalSegs) * 100));
-      setLoading(true, `Extracting Live Stream DVR segments... (${pct}%)`);
-      const info = startIdx === 0 ? initialInfo : await getDashVttInfo(null);
-      const bUrl = (info && info.baseUrl) ? info.baseUrl : initialInfo.baseUrl;
-      const endIdx = Math.min(startIdx + batchSize, totalSegs);
-
-      const indices = [];
-      for (let i = startIdx; i < endIdx; i++) indices.push(i);
-
-      for (let c = 0; c < indices.length; c += 18) {
-        const sub = indices.slice(c, c + 18);
-        await Promise.all(
-          sub.map(async segIdx => {
-            for (let attempt = 0; attempt < 2; attempt++) {
-              try {
-                const r = await fetch(`${bUrl}sq/${segIdx}`);
-                if (r.ok) {
-                  const txt = await r.text();
-                  if (txt && txt.trim()) {
-                    rawSegments[segIdx] = txt;
-                    break;
-                  }
-                }
-              } catch (e) {}
-            }
-          })
-        );
-      }
-    }
-
-    const sortedKeys = Object.keys(rawSegments).map(Number).sort((a, b) => a - b);
-    const snippets = [];
-
-    for (const segIdx of sortedKeys) {
-      const vtt = rawSegments[segIdx];
-      const mpegMatch = vtt.match(/MPEGTS:(\d+)/);
-      const segOffset = mpegMatch ? parseInt(mpegMatch[1], 10) / 90000.0 : segIdx * 5.0;
-
-      const blocks = vtt.split(/\r?\n\r?\n/);
-      for (const block of blocks) {
-        const tm = block.match(/(\d+):(\d+):(\d+\.\d+)\s*-->\s*(\d+):(\d+):(\d+\.\d+)/);
-        if (!tm) continue;
-        const cStart = parseInt(tm[1], 10) * 3600 + parseInt(tm[2], 10) * 60 + parseFloat(tm[3]);
-        const cEnd = parseInt(tm[4], 10) * 3600 + parseInt(tm[5], 10) * 60 + parseFloat(tm[6]);
-        const lines = block.split(/\r?\n/);
-        const tsIdx = lines.findIndex(l => l.includes("-->"));
-        if (tsIdx < 0) continue;
-
-        for (const tl of lines.slice(tsIdx + 1)) {
-          const noTags = tl.replace(/<[^>]+>/g, "");
-          const doc = new DOMParser().parseFromString(noTags, "text/html");
-          const cleanLine = (doc.body.textContent || "").replace(/\s+/g, " ").trim();
-          if (!cleanLine) continue;
-
-          const recent = snippets.slice(-6);
-          let isDup = false;
-          for (let rIdx = recent.length - 1; rIdx >= 0; rIdx--) {
-            const prev = recent[rIdx];
-            if (cleanLine === prev.text || prev.text.endsWith(cleanLine)) {
-              isDup = true;
-              break;
-            }
-            if (cleanLine.startsWith(prev.text) && segOffset + cStart - prev.start < 8.0) {
-              prev.text = cleanLine;
-              prev.duration = +Math.max(1.5, segOffset + cEnd - prev.start).toFixed(2);
-              isDup = true;
-              break;
-            }
-          }
-
-          if (!isDup) {
-            snippets.push({
-              text: cleanLine,
-              start: +(segOffset + cStart).toFixed(2),
-              duration: +Math.max(1.5, cEnd - cStart).toFixed(2)
-            });
-          }
-        }
-      }
-    }
-
-    const merged = [];
-    for (const item of snippets) {
-      const prev = merged[merged.length - 1];
-      if (
-        prev &&
-        !item.text.startsWith(">>") &&
-        item.start - prev.start < 4.0 &&
-        prev.text.length < 80
-      ) {
-        prev.text = `${prev.text} ${item.text}`.trim();
-        prev.duration = +Math.max(prev.duration, item.start + item.duration - prev.start).toFixed(2);
-      } else {
-        merged.push(item);
-      }
-    }
-
-    if (targetLang && !initialInfo.trackLang.startsWith(targetLang) && merged.length > 0) {
-      setLoading(true, `Translating Live Stream transcript to ${targetLang.toUpperCase()}...`);
-      for (let i = 0; i < merged.length; i += 60) {
-        const chunk = merged.slice(i, i + 60);
-        try {
-          const bodyParams = new URLSearchParams();
-          chunk.forEach(c => bodyParams.append("q", c.text));
-          const trUrl = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(targetLang)}`;
-          const trResp = await fetch(trUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-            body: bodyParams.toString()
-          });
-          if (trResp.ok) {
-            const trData = await trResp.json();
-            if (Array.isArray(trData)) {
-              trData.forEach((item, idx) => {
-                if (idx >= chunk.length) return;
-                if (Array.isArray(item) && typeof item[0] === "string" && item[0].trim()) {
-                  chunk[idx].text = item[0].strip ? item[0].strip() : item[0].trim();
-                } else if (typeof item === "string" && item.trim()) {
-                  chunk[idx].text = item.trim();
-                }
-              });
-            }
-          }
-        } catch (e) {}
-      }
-    }
-
-    return merged;
   }
 
   // 1. In-Browser Direct Mode
