@@ -27,31 +27,31 @@ Engineered with a **smart dual-path architecture**: instantly copies native YouT
 
 ```mermaid
 flowchart TD
-    Start(["YouTube Video (URL or Tab)"]) --> CheckCaptions{"Does YouTube provide auto/manual transcript?"}
+    Start["YouTube Video URL or Tab"] --> CheckCaptions{"Does YouTube provide auto or manual transcript?"}
     
     %% Path 1: Direct Caption Extraction
-    CheckCaptions -- Yes --> Direct["Instant Direct Transcript Extractor (0ms)"]
-    Direct --> DOMModern["Modern DOM Panel (PAmodern_transcript_view)"]
-    Direct --> DOMLegacy["Legacy DOM Panel (ytd-transcript-segment-renderer)"]
+    CheckCaptions -- "Yes" --> Direct["Instant Direct Transcript Extractor 0ms"]
+    Direct --> DOMModern["Modern DOM Panel PAmodern_transcript_view"]
+    Direct --> DOMLegacy["Legacy DOM Panel ytd-transcript-segment-renderer"]
     Direct --> InnertubeAPI["Innertube API / youtube-transcript-api"]
-    DOMModern --> LangRule["Strict Language Routing & Conversion"]
+    DOMModern --> LangRule["Strict Language Routing and Conversion"]
     DOMLegacy --> LangRule
     InnertubeAPI --> LangRule
 
     %% Path 2: Audio Extraction & Whisper ASR Fallback
-    CheckCaptions -- No / Live Stream / Fresh Upload --> ASR["Audio-to-Text Pipeline (Whisper ASR)"]
+    CheckCaptions -- "No (Live Stream / Fresh Upload)" --> ASR["Audio-to-Text Pipeline Whisper ASR"]
     ASR --> AudioDL["1. Extract Audio Stream via yt-dlp"]
-    AudioDL --> AudioDec["2. In-Memory Audio Decode (PyAV)"]
-    AudioDec --> WhisperTranscribe["3. Speech Recognition (faster-whisper CPU int8)"]
+    AudioDL --> AudioDec["2. In-Memory Audio Decode via PyAV"]
+    AudioDec --> WhisperTranscribe["3. Speech Recognition via faster-whisper CPU int8"]
     WhisperTranscribe --> LangRule
 
     %% Strict Language Transformation
     LangRule --> TargetChoice{"Select Target Language"}
-    TargetChoice -->|English (en)| OutEN["English Output: Preserves English, auto-converts Hindi/other sources to English"]
-    TargetChoice -->|Bangla (bn)| OutBN["Bangla Output: Preserves native Bangla, auto-translates English/Hindi to Bangla"]
+    TargetChoice -- "English (en)" --> OutEN["English Output: Preserves English, auto-converts Hindi or other sources to English"]
+    TargetChoice -- "Bangla (bn)" --> OutBN["Bangla Output: Preserves native Bangla, auto-translates English or Hindi to Bangla"]
 
     %% Export Formats
-    OutEN --> ExportFormats["Export Formats: Plain Text (.txt) | Subtitles (.srt, .vtt) | JSON | Markdown (.md)"]
+    OutEN --> ExportFormats["Export Formats: Plain Text (.txt), Subtitles (.srt, .vtt), JSON, Markdown (.md)"]
     OutBN --> ExportFormats
 ```
 
