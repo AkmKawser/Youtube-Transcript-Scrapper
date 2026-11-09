@@ -30,7 +30,8 @@ from youtube_transcript_api.formatters import (
     JSONFormatter
 )
 import updater
-import live_dvr
+import audio_transcriber
+from app import SimpleSnippet
 
 
 def extract_video_id(url_or_id: str) -> str:
@@ -95,12 +96,15 @@ def fetch_transcript_for_video(video_id: str, languages=("en",), translate_to=No
             })
 
         return fetched, snippets
-    except TranscriptsDisabled:
+    except (TranscriptsDisabled, NoTranscriptFound, IpBlocked, RequestBlocked, Exception):
         target_lang = translate_to or (languages[0] if languages else "en")
-        dvr_snippets = live_dvr.extract_live_dvr_transcript(video_id, target_lang=target_lang)
-        if dvr_snippets:
-            fetched_objs = [live_dvr.SimpleSnippet(s["text"], s["start"], s["duration"]) for s in dvr_snippets]
-            return fetched_objs, dvr_snippets
+        target_code = "bn" if (target_lang and target_lang.startswith("bn")) else "en"
+        print(f"Direct transcript unavailable. Extracting audio and converting to text via Whisper ASR (target: {target_code})...")
+        asr_res = audio_transcriber.transcribe_youtube_audio(video_id, target_lang=target_code)
+        asr_snippets = asr_res.get("snippets", [])
+        if asr_snippets:
+            fetched_objs = [SimpleSnippet(s["text"], s["start"], s["duration"]) for s in asr_snippets]
+            return fetched_objs, asr_snippets
         raise
 
 

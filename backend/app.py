@@ -33,8 +33,20 @@ from youtube_transcript_api.formatters import (
 )
 
 import updater
-import live_dvr
 import audio_transcriber
+
+class SimpleSnippet:
+    """Lightweight snippet object compatible with TextFormatter and SRTFormatter."""
+    def __init__(self, text: str, start: float, duration: float):
+        self.text = text
+        self.start = start
+        self.duration = duration
+
+    def __getitem__(self, item):
+        return getattr(self, item)
+
+    def get(self, item, default=None):
+        return getattr(self, item, default)
 
 app = Flask(__name__)
 # Enable CORS for all routes so Chrome Extension can communicate seamlessly
@@ -261,42 +273,14 @@ def get_transcript():
         target_lang = translate_target or (languages[0] if languages else "en")
         target_code = "bn" if target_lang.startswith("bn") else "en"
 
-        # Tier 2 Fallback: Live DVR WebVTT segments (for live streams)
-        dvr_snippets = None
-        try:
-            dvr_snippets = live_dvr.extract_live_dvr_transcript(video_id, target_lang=target_code)
-        except Exception as dvr_err:
-            print(f"[app.py] Live DVR extraction failed: {dvr_err}")
-
-        if dvr_snippets:
-            fetched_objs = [live_dvr.SimpleSnippet(s["text"], s["start"], s["duration"]) for s in dvr_snippets]
-            if out_format == "txt":
-                return TextFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
-            elif out_format == "srt":
-                return SRTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
-            elif out_format == "vtt":
-                return WebVTTFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/vtt; charset=utf-8"}
-            elif out_format == "markdown":
-                return format_markdown(dvr_snippets), 200, {"Content-Type": "text/markdown; charset=utf-8"}
-            else:
-                return jsonify({
-                    "success": True,
-                    "video_id": video_id,
-                    "source": "live_dvr_webvtt",
-                    "count": len(dvr_snippets),
-                    "snippets": dvr_snippets,
-                    "plain_text": TextFormatter().format_transcript(fetched_objs),
-                    "markdown": format_markdown(dvr_snippets)
-                })
-
-        # Tier 3 Fallback: Audio Extraction & Speech-to-Text via faster-whisper
-        # Used when YouTube does not provide transcripts (e.g. newly uploaded videos, completed streams)
+        # Modern ASR Engine: Audio Extraction & Speech-to-Text via faster-whisper
+        # Used when YouTube does not provide transcripts (e.g. newly uploaded videos, live stream completions)
         print(f"[app.py] Falling back to Audio-to-Text (faster-whisper) for video {video_id}...")
         try:
             asr_res = audio_transcriber.transcribe_youtube_audio(video_id, target_lang=target_code)
             asr_snippets = asr_res.get("snippets", [])
             if asr_snippets:
-                fetched_objs = [live_dvr.SimpleSnippet(s["text"], s["start"], s["duration"]) for s in asr_snippets]
+                fetched_objs = [SimpleSnippet(s["text"], s["start"], s["duration"]) for s in asr_snippets]
                 if out_format == "txt":
                     return TextFormatter().format_transcript(fetched_objs), 200, {"Content-Type": "text/plain; charset=utf-8"}
                 elif out_format == "srt":

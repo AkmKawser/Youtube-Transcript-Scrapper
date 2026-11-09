@@ -126,7 +126,7 @@ def download_audio_from_youtube(video_id: str, max_duration_sec: int = 7200) -> 
         "no_warnings": True,
     }
 
-    url = f"https://www.youtube.com/watch?v=5J2eSSgLD40" if video_id == "5J2eSSgLD40" else f"https://www.youtube.com/watch?v={video_id}"
+    url = f"https://www.youtube.com/watch?v={video_id}"
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -218,3 +218,4 @@ def transcribe_youtube_audio(video_id: str, target_lang: str = "en") -> Dict[str
                 os.remove(audio_path)
         except Exception:
             pass
+

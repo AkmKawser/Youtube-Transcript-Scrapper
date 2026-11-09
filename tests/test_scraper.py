@@ -13,8 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend"))
 
 from cli import extract_video_id, format_markdown
-from backend.app import app
-from backend.live_dvr import SimpleSnippet, translate_snippets_gtx
+from backend.app import app, SimpleSnippet
 import updater
 
 
@@ -94,18 +93,14 @@ class TestUpdaterModule(unittest.TestCase):
         self.assertTrue(len(ver) > 0)
 
 
-class TestLiveDvrModule(unittest.TestCase):
-    """Test Live Stream DVR helper objects."""
-
-    def test_simple_snippet(self):
-        snip = SimpleSnippet("Hello Live DVR", 12.5, 3.0)
-        self.assertEqual(snip.text, "Hello Live DVR")
-        self.assertEqual(snip["start"], 12.5)
-        self.assertEqual(snip.get("duration"), 3.0)
-
-
 class TestAudioTranscriber(unittest.TestCase):
     """Test audio translation and language rules."""
+
+    def test_simple_snippet(self):
+        snip = SimpleSnippet("Hello snippet", 10.0, 2.5)
+        self.assertEqual(snip.text, "Hello snippet")
+        self.assertEqual(snip["start"], 10.0)
+        self.assertEqual(snip.get("duration"), 2.5)
 
     def test_translate_text_helper(self):
         from backend.audio_transcriber import translate_text

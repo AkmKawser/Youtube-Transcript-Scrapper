@@ -95,36 +95,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     })();
     return true;
   }
-
-  // Parallel batch fetcher for Live Stream DVR WebVTT segments (bypasses googlevideo.com CORS)
-  if (request.action === "FETCH_DVR_BATCH") {
-    (async () => {
-      const { baseUrl, startIdx, endIdx } = request;
-      const segments = {};
-      const indices = [];
-      for (let i = startIdx; i < endIdx; i++) indices.push(i);
-
-      for (let c = 0; c < indices.length; c += 18) {
-        const sub = indices.slice(c, c + 18);
-        await Promise.all(
-          sub.map(async segIdx => {
-            for (let attempt = 0; attempt < 2; attempt++) {
-              try {
-                const r = await fetch(`${baseUrl}sq/${segIdx}`);
-                if (r.ok) {
-                  const txt = await r.text();
-                  if (txt && txt.trim()) {
-                    segments[segIdx] = txt;
-                    break;
-                  }
-                }
-              } catch (e) {}
-            }
-          })
-        );
-      }
-      sendResponse({ ok: true, segments });
-    })();
-    return true;
-  }
 });
